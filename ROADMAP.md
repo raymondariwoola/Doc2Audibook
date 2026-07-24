@@ -76,23 +76,25 @@ The foundation, already shipped.
 
 ---
 
-## Phase 1 — Gradio prototype 🔨
+## Phase 1 — Gradio prototype ✅
 
 Goal: make the vision **tangible** fast, on top of the existing engine.
 
-- [ ] `app.py` Gradio UI.
-- [ ] Drag-and-drop document upload (`.docx/.pdf/.txt/.md`).
-- [ ] Voice picker (edge-tts voices, filterable by locale/gender).
-- [ ] **Preview button** — synthesize a short sample of the selected voice at the
+- [x] `app.py` Gradio UI.
+- [x] Drag-and-drop document upload (`.docx/.pdf/.txt/.md`).
+- [x] Voice picker (edge-tts voices, filterable by locale/gender).
+- [x] **Preview button** — synthesize a short sample of the selected voice at the
       current pitch/rate and play it inline before committing.
-- [ ] **Pitch & pace sliders** with a "Recommended defaults" reset.
-- [ ] **Output format** choice: MP3 / M4A / WAV.
-- [ ] Progress bar per chunk; final duration + size; download button.
+- [x] **Pitch & pace sliders** with a "Recommended defaults" reset.
+- [x] **Output format** choice: MP3 / M4A / WAV.
+- [x] Progress bar per chunk; final duration + size; download button.
+- [x] Provider picker in the UI (added in Phase 2): switch engines, voices reload
+      per provider, pitch control disables where unsupported.
 
 **Engine work folded in this phase**
-- [ ] Add **pitch** support through the pipeline (`edge-tts` supports `pitch=`).
-- [ ] Reusable `build_audiobook(...)` core with a `progress_cb`.
-- [ ] Format transcoding via ffmpeg (mp3 stream-copy; m4a/aac; wav/pcm).
+- [x] Add **pitch** support through the pipeline (`edge-tts` supports `pitch=`).
+- [x] Reusable `build_audiobook(...)` core with a `progress_cb`.
+- [x] Format transcoding via ffmpeg (mp3 stream-copy; m4a/aac; wav/pcm).
 
 **Known limits to revisit later**
 - edge-tts source audio is 24 kHz mono ~48 kbps — WAV/high-bitrate exports
@@ -115,13 +117,16 @@ edge-tts is the default provider and all existing signatures were preserved.
       documented API but **not yet verified end-to-end** (no key here).
 - [x] Provider registry + `--provider` CLI flag; `available_providers()` reports
       which are usable right now.
-- [ ] **Free/local:** `PiperProvider`, `KokoroProvider`, `AppleSayProvider`.
+- [x] **Free/local:** `PiperProvider` — fully offline, cross-platform, tested
+      end-to-end (synthesize → MP3 → assemble → resume). Rate via `length_scale`,
+      pitch unsupported (advertised via capabilities). Models in `piper_voices/`.
+- [ ] **Free/local (more):** `KokoroProvider`, `AppleSayProvider`.
 - [ ] **Paid:** `ElevenLabsProvider`, `AzureProvider`; verify `OpenAIProvider` with a real key.
 - [ ] Secure key storage (OS keychain; currently env var / `.env`, never committed).
 - [ ] Per-voice **sample cache** so previews are instant after first play.
-- [ ] Capability-driven UI: a provider picker in the prototype that hides pitch
-      where unsupported and prompts for a key where needed (capabilities already
-      expose this; UI wiring is the remaining step).
+- [x] Capability-driven UI: provider picker in the prototype — voices reload per
+      provider, pitch control disables where unsupported, availability/API-key
+      status shown inline.
 
 ### Voice provider reference
 
@@ -129,7 +134,7 @@ edge-tts is the default provider and all existing signatures were preserved.
 |---|---|---|---|
 | **edge-tts** | Free | Natural, 300+ voices, no key | 24 kHz mono ceiling |
 | **Kokoro** | Free/local | Great quality for its size, offline | Small model, Apache-licensed |
-| **Piper** | Free/local | Fast, fully offline | Lower ceiling than neural cloud |
+| **Piper** ✅ | Free/local | Fast, fully offline, cross-platform | Implemented. Lower ceiling than neural cloud |
 | **Apple say** | Free/local | Built into macOS | Premium voices only-OK |
 | **OpenAI TTS** | Paid | Cheap, *steerable* tone | `gpt-4o-mini-tts` |
 | **ElevenLabs** | Paid | Best naturalness + cloning | Limited free tier |
@@ -199,3 +204,11 @@ Record notable choices here so future-us remembers the *why*.
   pending a real key — deliberately not wired into the prototype UI yet to avoid
   shipping an untested path into the happy flow. Capabilities (`supports_pitch`
   etc.) exist so a future provider picker can adapt controls per engine.
+- **2026-07-24** — Added `PiperProvider` (free, fully offline) and the provider
+  picker in the prototype UI. Verified `onnxruntime`/`piper-tts` install on Python
+  3.14 (cp314 wheels exist) and tested the full offline pipeline end-to-end. Piper
+  emits 16–22 kHz WAV, so the provider transcodes each chunk to MP3 (via ffmpeg,
+  `-f mp3`) to keep the resumable-chunk + stream-copy assembly uniform across
+  providers. Note: on the python.org macOS build, `piper.download_voices` fails TLS
+  verification (urllib uses no CA store by default) — documented `curl`/certifi as
+  the workaround for fetching models; runtime synthesis is fully offline.

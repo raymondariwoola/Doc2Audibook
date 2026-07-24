@@ -23,11 +23,15 @@ Add a provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import shutil
 import ssl
+import subprocess
 import sys
+import wave
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -299,11 +303,140 @@ class OpenAIProvider(TTSProvider):
 
 
 # ----------------------------------------------------------------------------
+# PiperProvider — free, fully offline, cross-platform neural TTS.
+# Needs the `piper-tts` package and at least one downloaded voice model
+# (an .onnx + .onnx.json pair) in the voice directory. No network at runtime.
+# ----------------------------------------------------------------------------
+
+# Where Piper looks for downloaded voice models. Override with PIPER_VOICE_DIR.
+#   python -m piper.download_voices en_US-lessac-medium --download-dir piper_voices
+PIPER_VOICE_DIR = Path(os.environ.get("PIPER_VOICE_DIR", "piper_voices"))
+
+
+def _rate_str_to_length_scale(rate: str) -> float:
+    """Map an edge-style rate ('-4%') to a Piper length_scale (>1 = slower)."""
+    try:
+        pct = float(rate.strip().rstrip("%"))
+    except ValueError:
+        pct = 0.0
+    return max(0.25, min(4.0, 1.0 - pct / 100.0))
+
+
+class PiperProvider(TTSProvider):
+    id = "piper"
+    label = "Piper (local, offline)"
+
+    def __init__(self, voice_dir: Optional[Path] = None) -> None:
+        self.voice_dir = Path(voice_dir) if voice_dir else PIPER_VOICE_DIR
+        self._loaded: dict[str, object] = {}   # model path -> PiperVoice (cached)
+
+    def _has_pkg(self) -> bool:
+        try:
+            import piper  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _models(self) -> list[Path]:
+        if not self.voice_dir.exists():
+            return []
+        return sorted(self.voice_dir.glob("*.onnx"))
+
+    def is_available(self) -> bool:
+        return self._has_pkg() and bool(self._models())
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            provider_id=self.id,
+            needs_api_key=False,
+            supports_rate=True,           # via length_scale
+            supports_pitch=False,         # Piper has no pitch control
+            supports_voice_list=True,     # scanned from the model directory
+            supports_cloning=False,
+            output_sample_rate_hz=None,   # depends on the chosen model
+            notes="Fully offline after a one-time model download. Rate maps to "
+                  "length_scale; pitch unsupported. Put .onnx models in "
+                  f"'{self.voice_dir}' (or set PIPER_VOICE_DIR).",
+        )
+
+    async def list_voices(self) -> list[VoiceInfo]:
+        voices: list[VoiceInfo] = []
+        for model in self._models():
+            locale = ""
+            config = model.with_suffix(model.suffix + ".json")
+            if config.exists():
+                try:
+                    data = json.loads(config.read_text(encoding="utf-8"))
+                    locale = data.get("language", {}).get("code", "") or ""
+                except Exception:
+                    pass
+            vid = model.stem  # e.g. "en_US-lessac-low"
+            voices.append(VoiceInfo(
+                id=vid, label=vid, gender="", locale=locale, provider=self.id,
+                raw={"ShortName": vid, "Locale": locale, "Gender": ""},
+            ))
+        return voices
+
+    def _load_voice(self, voice_id: str):
+        from piper import PiperVoice
+
+        model = self.voice_dir / f"{voice_id}.onnx"
+        if not model.exists():
+            raise RuntimeError(
+                f"Piper model '{model}' not found. Download one, e.g.:\n"
+                f"  python -m piper.download_voices en_US-lessac-medium "
+                f"--download-dir {self.voice_dir}"
+            )
+        key = str(model)
+        if key not in self._loaded:
+            self._loaded[key] = PiperVoice.load(str(model))
+        return self._loaded[key]
+
+    async def synthesize(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> None:
+        if not self._has_pkg():
+            raise RuntimeError("The `piper-tts` package is not installed. "
+                               "`pip install piper-tts`.")
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("ffmpeg is required to encode Piper audio to MP3.")
+
+        length_scale = _rate_str_to_length_scale(rate)
+
+        def _run() -> None:
+            from piper import SynthesisConfig
+
+            voice = self._load_voice(voice_id)
+            wav_tmp = out_path.with_suffix(".piper.wav")
+            with wave.open(str(wav_tmp), "wb") as wav_file:
+                voice.synthesize_wav(
+                    text, wav_file, syn_config=SynthesisConfig(length_scale=length_scale)
+                )
+            # Transcode to MP3 so chunks share a codec for ffmpeg stream-copy.
+            tmp = out_path.with_suffix(out_path.suffix + ".part")
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                   "-i", str(wav_tmp), "-c:a", "libmp3lame", "-b:a", "64k",
+                   "-f", "mp3", str(tmp)]   # .part extension needs explicit format
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            wav_tmp.unlink(missing_ok=True)
+            if result.returncode != 0:
+                tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"ffmpeg failed encoding Piper audio:\n{result.stderr.strip()}")
+            if tmp.stat().st_size == 0:
+                tmp.unlink(missing_ok=True)
+                raise RuntimeError("Piper produced an empty audio file")
+            tmp.replace(out_path)
+
+        await asyncio.to_thread(_run)
+
+
+# ----------------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------------
 
 _REGISTRY: dict[str, type[TTSProvider]] = {
     EdgeTTSProvider.id: EdgeTTSProvider,
+    PiperProvider.id: PiperProvider,
     OpenAIProvider.id: OpenAIProvider,
 }
 _INSTANCES: dict[str, TTSProvider] = {}

@@ -8,3 +8,6 @@ __pycache__/
 outputs/
 .narrate_cache/
 .gradio/
+
+# Piper voice models (large; download locally per README)
+piper_voices/

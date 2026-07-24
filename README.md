@@ -181,17 +181,33 @@ engine. Pick one with `--provider`:
 
 | Provider | Cost | Notes |
 |---|---|---|
-| `edge` *(default)* | Free | Microsoft edge-tts neural voices, no key. |
+| `edge` *(default)* | Free | Microsoft edge-tts neural voices, no key. Needs internet. |
+| `piper` | Free | **Fully offline** neural TTS. Needs `piper-tts` + a downloaded voice model. Rate supported; pitch not. |
 | `openai` | Paid | OpenAI TTS. **Experimental** — set `OPENAI_API_KEY`; rate maps to `speed`, pitch unsupported. Not yet verified end-to-end. |
 
 ```bash
-narrate --provider edge --list-voices en-US        # free voices
+narrate --provider edge --list-voices en-US        # free online voices
+narrate mydoc.docx --provider piper --voice en_US-lessac-medium   # offline
 export OPENAI_API_KEY=sk-...                        # to try the paid provider
 narrate mydoc.docx --provider openai --voice nova
 ```
 
-Adding a provider (Piper/Kokoro/ElevenLabs/Azure) means subclassing
-`TTSProvider` and registering it — see [`ROADMAP.md`](ROADMAP.md) Phase 2.
+### Offline with Piper
+
+```bash
+pip install piper-tts
+# Download a voice once (then no network is needed at all):
+python -m piper.download_voices en_US-lessac-medium --download-dir piper_voices
+narrate mydoc.docx --provider piper --voice en_US-lessac-medium
+```
+
+Models live in `piper_voices/` by default (override with `PIPER_VOICE_DIR`).
+Browse available Piper voices at
+<https://huggingface.co/rhasspy/piper-voices>. In the browser UI, Piper appears
+in the provider dropdown once at least one model is present.
+
+Adding a provider (Kokoro/ElevenLabs/Azure) means subclassing `TTSProvider` and
+registering it — see [`ROADMAP.md`](ROADMAP.md) Phase 2.
 
 ---
 
