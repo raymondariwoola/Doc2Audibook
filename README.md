@@ -8,6 +8,15 @@ audiobook-style **MP3** using Microsoft's free
 `say`/`espeak` kind), the pipeline is **resumable** if it's interrupted, and the
 final audio is stitched together losslessly with `ffmpeg`.
 
+Two ways to use it:
+
+- **CLI** — `narrate mydoc.docx` (scriptable, resumable, batteries-included).
+- **Browser UI** — `python app.py` opens a local app to attach a document,
+  **preview a voice before committing**, tune pitch & pace, and export MP3/M4A/WAV.
+
+See [`ROADMAP.md`](ROADMAP.md) for where this is headed (paid-voice providers,
+a full local web app, and native macOS/Windows desktop builds).
+
 ---
 
 ## Features
@@ -72,7 +81,32 @@ Verify with `ffmpeg -version`.
 
 ---
 
-## Usage
+## Browser UI (Gradio prototype)
+
+A local web app over the same engine — nothing is uploaded anywhere; it runs on
+your machine.
+
+```bash
+pip install -r requirements-ui.txt      # adds gradio (CLI doesn't need it)
+python app.py                           # opens http://127.0.0.1:7860
+```
+
+In the app you can:
+
+- Attach a `.docx/.pdf/.txt/.md` document.
+- Filter voices by locale and **🔊 Preview** the selected voice (at your current
+  pitch/pace) before committing to a full render.
+- Adjust **pace** and **pitch** sliders, with a **Recommended defaults** reset.
+- Choose **MP3 / M4A / WAV** output, add find/replace rules, and download the result.
+
+Renders land in `outputs/`; a chunk cache in `.narrate_cache/` (keyed by the
+document and voice settings) makes re-runs resume instantly. This is **Phase 1** of the
+[roadmap](ROADMAP.md) — the long-term UI is a FastAPI + React app and native
+desktop builds.
+
+---
+
+## Usage (CLI)
 
 ```
 narrate <input_file> [--output out.mp3] [--voice VOICE] [--rate -4%]

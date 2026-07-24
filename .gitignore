@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 *_chunks/
 *.egg-info/
+
+# Gradio prototype runtime output
+outputs/
+.narrate_cache/
+.gradio/

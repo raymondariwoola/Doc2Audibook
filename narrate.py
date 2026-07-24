@@ -18,8 +18,9 @@ import shutil
 import ssl
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 # ----------------------------------------------------------------------------
 # Defaults
@@ -405,11 +406,18 @@ def _apply_ssl_fallback() -> bool:
 # TTS generation
 # ----------------------------------------------------------------------------
 
+DEFAULT_PITCH = "+0Hz"          # natural pitch; edge-tts accepts e.g. "+5Hz"
 
-async def _synthesize_one(text: str, voice: str, rate: str, out_path: Path) -> None:
+# Log the SSL fallback only once per process, no matter how many chunks trip it.
+_ssl_fallback_logged = False
+
+
+async def _synthesize_one(
+    text: str, voice: str, rate: str, pitch: str, out_path: Path
+) -> None:
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+    communicate = edge_tts.Communicate(text, voice=voice, rate=rate, pitch=pitch)
     tmp = out_path.with_suffix(out_path.suffix + ".part")
     await communicate.save(str(tmp))
     if tmp.stat().st_size == 0:
@@ -418,44 +426,72 @@ async def _synthesize_one(text: str, voice: str, rate: str, out_path: Path) -> N
     tmp.replace(out_path)
 
 
-async def generate_chunks(
-    chunks: list[str], voice: str, rate: str, work_dir: Path
-) -> list[Path]:
-    work_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
-    ssl_fallback_active = False
-    total = len(chunks)
-
-    for i, text in enumerate(chunks, start=1):
-        out_path = work_dir / f"chunk_{i:04d}.mp3"
-        paths.append(out_path)
-
-        # Resumable: a non-empty existing chunk is left untouched.
-        if out_path.exists() and out_path.stat().st_size > 0:
-            print(f"  [{i:>3}/{total}] {len(text):>4} chars  — skipped (already exists)")
-            continue
-
-        try:
-            await _synthesize_one(text, voice, rate, out_path)
-        except Exception as exc:  # noqa: BLE001
-            if not ssl_fallback_active and _is_ssl_cert_error(exc):
+async def synthesize_to_file(
+    text: str, voice: str, rate: str, pitch: str, out_path: Path
+) -> None:
+    """Synthesize one utterance, transparently falling back to the system trust
+    store if certifi's bundle rejects a corporate-proxy self-signed cert."""
+    global _ssl_fallback_logged
+    try:
+        await _synthesize_one(text, voice, rate, pitch, out_path)
+    except Exception as exc:  # noqa: BLE001
+        if _is_ssl_cert_error(exc):
+            if not _ssl_fallback_logged:
                 print(
                     "  ! SSL certificate verification failed against certifi's bundle.\n"
                     "  ! Falling back to the system trust store "
                     "(edge_tts._SSL_CTX -> ssl.create_default_context()).",
                     file=sys.stderr,
                 )
-                if _apply_ssl_fallback():
-                    ssl_fallback_active = True
-                    await _synthesize_one(text, voice, rate, out_path)  # retry once
-                else:
-                    raise
-            else:
-                raise
+                _ssl_fallback_logged = True
+            if _apply_ssl_fallback():
+                await _synthesize_one(text, voice, rate, pitch, out_path)  # retry once
+                return
+        raise
 
-        print(f"  [{i:>3}/{total}] {len(text):>4} chars  — done")
+
+async def generate_chunks(
+    chunks: list[str],
+    voice: str,
+    rate: str,
+    pitch: str,
+    work_dir: Path,
+    on_chunk=None,
+) -> list[Path]:
+    """Synthesize each chunk to its own MP3. Resumable: non-empty existing
+    chunk files are skipped. `on_chunk(i, total, chars, status)` is called per
+    chunk with status in {"skipped", "done"} so any UI can render progress."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    total = len(chunks)
+
+    for i, text in enumerate(chunks, start=1):
+        out_path = work_dir / f"chunk_{i:04d}.mp3"
+        paths.append(out_path)
+
+        if out_path.exists() and out_path.stat().st_size > 0:
+            if on_chunk:
+                on_chunk(i, total, len(text), "skipped")
+            continue
+
+        await synthesize_to_file(text, voice, rate, pitch, out_path)
+        if on_chunk:
+            on_chunk(i, total, len(text), "done")
 
     return paths
+
+
+async def fetch_voices() -> list[dict]:
+    """Return the edge-tts voice catalog (with SSL fallback). Reusable by any UI."""
+    import edge_tts
+
+    try:
+        return await edge_tts.list_voices()
+    except Exception as exc:  # noqa: BLE001
+        if _is_ssl_cert_error(exc) and _apply_ssl_fallback():
+            print("  ! SSL fallback engaged for voice listing.", file=sys.stderr)
+            return await edge_tts.list_voices()
+        raise
 
 
 # ----------------------------------------------------------------------------
@@ -464,17 +500,7 @@ async def generate_chunks(
 
 
 async def list_voices(filter_substr: str | None) -> None:
-    import edge_tts
-
-    try:
-        voices = await edge_tts.list_voices()
-    except Exception as exc:  # noqa: BLE001
-        if _is_ssl_cert_error(exc) and _apply_ssl_fallback():
-            print("  ! SSL fallback engaged for voice listing.", file=sys.stderr)
-            voices = await edge_tts.list_voices()
-        else:
-            raise
-
+    voices = await fetch_voices()
     voices.sort(key=lambda v: (v.get("Locale", ""), v.get("ShortName", "")))
     needle = (filter_substr or "").lower()
     shown = 0
@@ -519,6 +545,39 @@ def assemble(chunk_paths: list[Path], output: Path, work_dir: Path) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg concat failed:\n{result.stderr.strip()}")
+
+
+# Container/codec settings per output format. mp3 is a lossless stream copy of
+# the edge-tts chunks; the others transcode the concatenated audio once.
+SUPPORTED_FORMATS = {
+    "mp3": ["-c", "copy"],
+    "m4a": ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"],
+    "wav": ["-c:a", "pcm_s16le"],
+}
+
+
+def _transcode(src: Path, dst: Path, fmt: str) -> None:
+    """Re-encode the concatenated audio into a non-mp3 container via ffmpeg."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-i", str(src), *SUPPORTED_FORMATS[fmt], str(dst)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg transcode to {fmt} failed:\n{result.stderr.strip()}")
+
+
+def encode_output(chunk_paths: list[Path], output: Path, work_dir: Path, fmt: str) -> None:
+    """Assemble chunks into the final file in the requested format."""
+    if fmt not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported format '{fmt}'. Choose one of: "
+                         f"{', '.join(SUPPORTED_FORMATS)}")
+    if fmt == "mp3":
+        assemble(chunk_paths, output, work_dir)         # stream copy, no re-encode
+    else:
+        concat = work_dir / "_concat.mp3"
+        assemble(chunk_paths, concat, work_dir)
+        _transcode(concat, output, fmt)
+        concat.unlink(missing_ok=True)
 
 
 def probe_duration(path: Path) -> float | None:
@@ -578,6 +637,92 @@ def parse_rules(replace_args: list[str] | None, rules_file: str | None) -> list[
 
 
 # ----------------------------------------------------------------------------
+# Reusable pipeline core — shared by the CLI and every future UI (Gradio, web,
+# desktop). UI-agnostic: takes optional progress callbacks, returns a result.
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class AudiobookResult:
+    output: Path
+    fmt: str
+    duration: Optional[float]
+    size: int
+    n_blocks: int
+    n_paragraphs: int
+    n_chunks: int
+    total_chars: int
+    work_dir: Path
+
+
+def build_audiobook(
+    input_path: Path,
+    output: Path,
+    *,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    pitch: str = DEFAULT_PITCH,
+    fmt: str = "mp3",
+    user_rules: Optional[list[tuple[str, str]]] = None,
+    work_dir: Optional[Path] = None,
+    keep_chunks: bool = False,
+    max_chars: int = MAX_CHUNK_CHARS,
+    on_stage: Optional[Callable[[str, dict], None]] = None,
+    on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
+) -> AudiobookResult:
+    """Run the full document -> narrated audio pipeline.
+
+    `on_stage(stage, info)` fires at "extracted", "assembling", and "done".
+    `on_chunk(i, total, chars, status)` fires per chunk ("skipped"/"done").
+    Raises ValueError if the document yields no readable text.
+    """
+    input_path = Path(input_path)
+    output = Path(output)
+    if fmt not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported format '{fmt}'. Choose one of: "
+                         f"{', '.join(SUPPORTED_FORMATS)}")
+    if work_dir is None:
+        work_dir = output.with_name(output.stem + "_chunks")
+    work_dir = Path(work_dir)
+
+    blocks = extract_blocks(input_path)
+    paragraphs = blocks_to_paragraphs(blocks, user_rules or [])
+    chunks = chunk_paragraphs(paragraphs, max_chars)
+    if not chunks:
+        raise ValueError("No readable text was extracted from the document.")
+    total_chars = sum(len(c) for c in chunks)
+
+    if on_stage:
+        on_stage("extracted", {
+            "blocks": len(blocks), "paragraphs": len(paragraphs),
+            "chunks": len(chunks), "chars": total_chars, "work_dir": str(work_dir),
+        })
+
+    chunk_paths = asyncio.run(
+        generate_chunks(chunks, voice, rate, pitch, work_dir, on_chunk=on_chunk)
+    )
+
+    if on_stage:
+        on_stage("assembling", {"output": str(output), "fmt": fmt})
+    encode_output(chunk_paths, output, work_dir, fmt)
+
+    size = output.stat().st_size
+    duration = probe_duration(output)
+
+    if not keep_chunks:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    result = AudiobookResult(
+        output=output, fmt=fmt, duration=duration, size=size,
+        n_blocks=len(blocks), n_paragraphs=len(paragraphs),
+        n_chunks=len(chunks), total_chars=total_chars, work_dir=work_dir,
+    )
+    if on_stage:
+        on_stage("done", {"duration": duration, "size": size})
+    return result
+
+
+# ----------------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------------
 
@@ -591,7 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  narrate report.docx\n"
-            "  narrate book.pdf --output book.mp3 --voice en-US-AriaNeural --rate -8%%\n"
+            "  narrate book.pdf --output book.mp3 --voice en-US-AriaNeural --rate -8%\n"
             "  narrate notes.md --replace 'NOTE:=Here is an important note.' --keep-chunks\n"
             "  narrate --list-voices en-US\n"
         ),
@@ -602,6 +747,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rate", default=DEFAULT_RATE,
                    help="speech rate, e.g. -10%% or +5%% (default: "
                         + DEFAULT_RATE.replace("%", "%%") + ")")
+    p.add_argument("--pitch", default=DEFAULT_PITCH,
+                   help=f"voice pitch, e.g. -5Hz or +10Hz (default: {DEFAULT_PITCH})")
+    p.add_argument("--format", choices=sorted(SUPPORTED_FORMATS), default="mp3",
+                   help="output audio format when --output is omitted (default: mp3)")
     p.add_argument("--list-voices", nargs="?", const="", metavar="FILTER",
                    help="list available voices (optionally filter by locale/name substring) and exit")
     p.add_argument("--replace", action="append", metavar="FROM=TO",
@@ -631,7 +780,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: input file not found: {input_path}", file=sys.stderr)
         return 2
 
-    output = Path(args.output) if args.output else input_path.with_suffix(".mp3")
+    # --output extension is the source of truth for format; else --format flag.
+    if args.output:
+        output = Path(args.output)
+        fmt = output.suffix.lower().lstrip(".") or "mp3"
+    else:
+        fmt = args.format
+        output = input_path.with_suffix("." + fmt)
+    if fmt not in SUPPORTED_FORMATS:
+        print(f"error: unsupported output format '{fmt}'. Choose one of: "
+              f"{', '.join(sorted(SUPPORTED_FORMATS))}", file=sys.stderr)
+        return 2
     work_dir = Path(args.work_dir) if args.work_dir else output.with_name(output.stem + "_chunks")
 
     try:
@@ -641,46 +800,46 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"Reading    : {input_path}  ({input_path.suffix.lower()})")
-    blocks = extract_blocks(input_path)
-    paragraphs = blocks_to_paragraphs(blocks, user_rules)
-    chunks = chunk_paragraphs(paragraphs, args.max_chars)
-    total_chars = sum(len(c) for c in chunks)
-    if not chunks:
-        print("error: no readable text was extracted from the document.", file=sys.stderr)
-        return 1
+    print(f"Voice      : {args.voice}   Rate: {args.rate}   Pitch: {args.pitch}   Format: {fmt}")
 
-    print(f"Voice      : {args.voice}   Rate: {args.rate}")
-    print(f"Extracted  : {len(blocks)} blocks -> {len(paragraphs)} paragraphs "
-          f"-> {len(chunks)} chunks ({total_chars:,} chars)")
-    print(f"Work dir   : {work_dir}  (resumable — existing chunks are skipped)")
-    print("Synthesizing chunks:")
+    def on_stage(stage: str, info: dict) -> None:
+        if stage == "extracted":
+            print(f"Extracted  : {info['blocks']} blocks -> {info['paragraphs']} paragraphs "
+                  f"-> {info['chunks']} chunks ({info['chars']:,} chars)")
+            print(f"Work dir   : {info['work_dir']}  (resumable — existing chunks are skipped)")
+            print("Synthesizing chunks:")
+        elif stage == "assembling":
+            verb = "stream copy" if info["fmt"] == "mp3" else f"transcode -> {info['fmt']}"
+            print(f"Assembling : {info['output']}  (ffmpeg {verb})")
+
+    def on_chunk(i: int, total: int, chars: int, status: str) -> None:
+        label = "skipped (already exists)" if status == "skipped" else "done"
+        print(f"  [{i:>3}/{total}] {chars:>4} chars  — {label}")
 
     try:
-        chunk_paths = asyncio.run(generate_chunks(chunks, args.voice, args.rate, work_dir))
+        result = build_audiobook(
+            input_path, output,
+            voice=args.voice, rate=args.rate, pitch=args.pitch, fmt=fmt,
+            user_rules=user_rules, work_dir=work_dir,
+            keep_chunks=args.keep_chunks, max_chars=args.max_chars,
+            on_stage=on_stage, on_chunk=on_chunk,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:  # noqa: BLE001
         print(f"\nerror during synthesis: {exc}", file=sys.stderr)
         print("Re-run the same command to resume from the last completed chunk.", file=sys.stderr)
         return 1
 
-    print(f"Assembling : {output}  (ffmpeg stream copy)")
-    try:
-        assemble(chunk_paths, output, work_dir)
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    size = output.stat().st_size
-    duration = probe_duration(output)
-    dur_str = _fmt_duration(duration) if duration is not None else "unknown (ffprobe not found)"
+    dur_str = (_fmt_duration(result.duration) if result.duration is not None
+               else "unknown (ffprobe not found)")
     print("-" * 60)
-    print(f"Done  ->  {output}")
+    print(f"Done  ->  {result.output}")
     print(f"Duration : {dur_str}")
-    print(f"Size     : {_fmt_size(size)}")
-
+    print(f"Size     : {_fmt_size(result.size)}")
     if args.keep_chunks:
-        print(f"Chunks kept in: {work_dir}")
-    else:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        print(f"Chunks kept in: {result.work_dir}")
 
     return 0
 

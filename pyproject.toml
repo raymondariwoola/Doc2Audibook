@@ -14,8 +14,12 @@ dependencies = [
     "pypdf>=4.0.0",
 ]
 
+[project.optional-dependencies]
+ui = ["gradio>=5.0"]
+
 [project.scripts]
 narrate = "narrate:main"
+narrate-ui = "app:main"
 
 [tool.setuptools]
-py-modules = ["narrate"]
+py-modules = ["narrate", "app"]
