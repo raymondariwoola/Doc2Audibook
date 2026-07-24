@@ -11,3 +11,5 @@ outputs/
 
 # Piper voice models (large; download locally per README)
 piper_voices/
+
+*.DS_Store
