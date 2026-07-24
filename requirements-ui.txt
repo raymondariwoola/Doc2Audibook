@@ -3,4 +3,4 @@
 #
 # The core CLI (narrate.py) with the default edge-tts provider does NOT need this.
 
-gradio>=5.0
+gradio==6.20.0

@@ -1,8 +1,9 @@
 # Doc2Audiobook — `narrate`
 
-Turn a document (`.docx`, `.pdf`, `.txt`, or `.md`) into a natural-sounding,
-audiobook-style **MP3** using Microsoft's free
-[`edge-tts`](https://github.com/rany2/edge-tts) neural voices.
+Turn a document (`.docx`, `.pdf`, `.txt`, or `.md`) into a natural-sounding
+**MP3, M4A, or WAV** audiobook. Microsoft
+[`edge-tts`](https://github.com/rany2/edge-tts) is the free online default;
+Piper and Kokoro provide fully offline alternatives.
 
 **No paid API key required.** The voices are genuinely natural (not the robotic
 `say`/`espeak` kind), the pipeline is **resumable** if it's interrupted, and the
@@ -14,8 +15,8 @@ Two ways to use it:
 - **Browser UI** — `python app.py` opens a local app to attach a document,
   **preview a voice before committing**, tune pitch & pace, and export MP3/M4A/WAV.
 
-See [`ROADMAP.md`](ROADMAP.md) for where this is headed (paid-voice providers,
-a full local web app, and native macOS/Windows desktop builds).
+See [`ROADMAP.md`](ROADMAP.md) for the planned paid providers, full local web
+app, and native macOS/Windows desktop builds.
 
 ---
 
@@ -28,10 +29,11 @@ same command you run when you move to another machine or clone fresh:
 python bootstrap.py
 ```
 
-It creates a `.venv`, installs dependencies, checks for `ffmpeg` (with install
-hints if missing), and downloads the offline voice models listed in
-[`voices.manifest.json`](voices.manifest.json). It's **idempotent** — re-run it
-after every `git pull` to stay in lockstep.
+It creates or repairs `.venv`, installs the pinned direct dependencies, checks
+for `ffmpeg` (with install hints if missing), and downloads the offline voice
+models listed in [`voices.manifest.json`](voices.manifest.json). Every model is
+verified against its recorded SHA-256 digest. The command is **idempotent** —
+re-run it after every `git pull` to stay in lockstep.
 
 **What syncs across machines:** all code, the roadmap, and *which* voices you use
 (the manifest) travel via git. The large bits — the `.venv`, the voice model
@@ -46,7 +48,8 @@ on each. AI agents working in this repo should read
 
 ## Features
 
-- **Real neural voices** via `edge-tts` — pick any with `--voice`, list them with `--list-voices`.
+- **Pluggable voices** — Edge TTS online by default, Piper/Kokoro offline,
+  Apple `say` on macOS, and an experimental key-gated OpenAI provider.
 - **Correct reading order.**
   - `.docx`: walks the document body in true document order, so **tables are read
     in place** relative to surrounding paragraphs. Each table is read row by row
@@ -61,10 +64,10 @@ on each. AI agents working in this repo should read
   - Markdown/formatting artifacts (`**`, `_`, `` ` ``, table `|` pipes, list
     bullets, links) are stripped so they aren't read literally.
   - **Your own** find/replace rules via `--replace` and/or `--rules file.json`.
-- **Chunked + resumable.** Text is split into `<3000`-char chunks on paragraph
-  boundaries (never mid-sentence). Each chunk becomes its own MP3; **re-running
-  the same command skips any chunk whose MP3 already exists**, so an interrupted
-  run picks up where it left off.
+- **Chunked + safely resumable.** Text targets 3,000-character chunks on
+  paragraph and sentence boundaries. A cache manifest fingerprints the cleaned
+  text, provider/model, voice, pitch, rate, and chunk size. The exact same render
+  skips existing chunks; changed inputs invalidate stale generated chunks.
 - **Configurable rate** with `--rate` (default `-4%`, a touch slower than normal).
 - **Lossless assembly.** Chunks are concatenated with `ffmpeg -c copy` (stream
   copy, no re-encoding), and the final duration + file size are printed.
@@ -79,7 +82,8 @@ above). To do it by hand instead:
 
 ### 1. Python dependencies
 
-Requires **Python 3.9+**.
+Requires **Python 3.10+** (the pinned Gradio UI requires 3.10; the core engine
+itself remains compatible with Python 3.9).
 
 ```bash
 # from the project folder
@@ -130,9 +134,11 @@ In the app you can:
 - Adjust **pace** and **pitch** sliders, with a **Recommended defaults** reset.
 - Choose **MP3 / M4A / WAV** output, add find/replace rules, and download the result.
 
-Renders land in `outputs/`; a chunk cache in `.narrate_cache/` (keyed by the
-document and voice settings) makes re-runs resume instantly. This is **Phase 1** of the
-[roadmap](ROADMAP.md) — the long-term UI is a FastAPI + React app and native
+Renders land in `outputs/` with a short render digest in the filename, preventing
+same-stem uploads from overwriting different audiobooks. A chunk cache in
+`.narrate_cache/` is keyed by document content, provider/model, voice settings,
+chunk size, and replacement rules. This is **Phase 1** of the
+[roadmap](ROADMAP.md); the long-term UI is a FastAPI + React app and native
 desktop builds.
 
 ---
@@ -140,7 +146,8 @@ desktop builds.
 ## Usage (CLI)
 
 ```
-narrate <input_file> [--output out.mp3] [--voice VOICE] [--rate -4%]
+narrate <input_file> [--output out.mp3] [--provider PROVIDER] [--voice VOICE]
+                     [--rate -4%] [--pitch +0Hz] [--format mp3|m4a|wav]
                      [--replace FROM=TO] [--rules rules.json]
                      [--keep-chunks] [--work-dir DIR] [--max-chars N]
 narrate --list-voices [FILTER]
@@ -171,7 +178,7 @@ narrate handbook.docx --rules rules.example.json
 
 ### Resuming an interrupted run
 
-Just run the **exact same command again**. Chunk MP3s already on disk are
+Run the **exact same command again**. Valid chunk MP3s already on disk are
 skipped and only the missing ones are generated:
 
 ```
@@ -183,7 +190,8 @@ Synthesizing chunks:
 ```
 
 Chunks live in `<output>_chunks/` (override with `--work-dir`). They are deleted
-on success unless you pass `--keep-chunks`.
+on success unless you pass `--keep-chunks`. If any audio-affecting input changes,
+the engine clears its stale generated artifacts before synthesis.
 
 ---
 
@@ -192,9 +200,12 @@ on success unless you pass `--keep-chunks`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `input` | — | Document to narrate (`.docx`, `.pdf`, `.txt`, `.md`). |
-| `-o, --output` | `<input>.mp3` | Output MP3 path. |
-| `--voice` | `en-US-AndrewNeural` | Any `edge-tts` voice (`--list-voices` to browse). |
+| `-o, --output` | `<input>.<format>` | Output path; its extension selects the format. |
+| `--provider` | `edge` | TTS provider ID. |
+| `--voice` | `en-US-AndrewNeural` | Voice ID for the selected provider. |
 | `--rate` | `-4%` | Speech rate, e.g. `-10%` slower, `+5%` faster. |
+| `--pitch` | `+0Hz` | Pitch adjustment; ignored by providers that do not support it. |
+| `--format` | `mp3` | Format used when `--output` is omitted: MP3, M4A, or WAV. |
 | `--list-voices [FILTER]` | — | List voices (optional locale/name filter) and exit. |
 | `--replace FROM=TO` | — | Find/replace rule for speech. Repeatable. |
 | `--rules FILE` | — | JSON of rules — a `{"from":"to"}` object or `[{ "from":..,"to":.. }]`. |
@@ -248,8 +259,9 @@ narrate mydoc.docx --provider kokoro --voice af_heart
   `am_adam`. Models from <https://github.com/thewh1teagle/kokoro-onnx/releases>.
 - **Apple `say`** (macOS) needs nothing — it appears automatically on a Mac.
 
-Each offline provider appears in the CLI (`--provider`) and the browser UI's
-provider dropdown once its package + model are present.
+Each provider always appears in the UI with its availability status. Offline
+providers become usable once their package and checksum-verified models are
+present.
 
 Adding a provider (ElevenLabs/Azure/…) means subclassing `TTSProvider` and
 registering it — see [`ROADMAP.md`](ROADMAP.md) Phase 2.
@@ -283,16 +295,35 @@ No configuration needed — it only engages if the default path fails.
 ## How it works (pipeline)
 
 ```
-extract (ordered blocks)  ->  clean for speech  ->  chunk (<3000 chars, on
-paragraph boundaries)  ->  edge-tts per chunk (resumable)  ->  ffmpeg concat
-(stream copy)  ->  final .mp3  (+ duration & size)
+extract (ordered blocks)  ->  clean for speech  ->  chunk (~3000 chars, on
+paragraph/sentence boundaries)  ->  selected TTS provider (resumable)
+->  ffmpeg concat/transcode
+->  final MP3/M4A/WAV  (+ duration & size)
 ```
 
-Everything lives in a single module, [`narrate.py`](narrate.py).
+The reusable engine lives in [`narrate.py`](narrate.py); provider integrations
+live in [`providers.py`](providers.py). Synchronous callers use
+`build_audiobook(...)`, while async servers can await
+`build_audiobook_async(...)` without nesting an event loop.
+
+## Testing
+
+After bootstrapping:
+
+```bash
+python -m unittest discover -s tests -v
+python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py
+```
+
+The suite covers DOCX/PDF/Markdown/text extraction, cleanup, chunking, rules,
+resumable cache invalidation, UI cache/output identities, checksum enforcement,
+provider conversions, and the async pipeline. Piper and Kokoro can also be
+exercised locally with the sample fixture in `tests/fixtures/sample.txt`.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+ for the full bootstrap/UI
 - `edge-tts`, `python-docx`, `pypdf` (see [requirements.txt](requirements.txt))
 - `ffmpeg` / `ffprobe` on PATH
-- An internet connection (edge-tts calls Microsoft's free voice service)
+- An internet connection for Edge/OpenAI synthesis and initial model downloads;
+  Piper, Kokoro, and Apple run offline afterward

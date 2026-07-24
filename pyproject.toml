@@ -1,28 +1,28 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc2audiobook"
 version = "1.0.0"
-description = "Convert .docx/.pdf/.txt/.md documents into narrated audiobook-style MP3s using free edge-tts neural voices."
+description = "Convert documents into narrated MP3, M4A, or WAV audiobooks using online or offline neural voices."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-    "edge-tts>=6.1.0",
-    "python-docx>=1.1.0",
-    "pypdf>=4.0.0",
+    "edge-tts==7.2.8",
+    "python-docx==1.2.0",
+    "pypdf==6.14.2",
 ]
 
 [project.optional-dependencies]
-ui = ["gradio>=5.0"]
+ui = ["gradio==6.20.0"]
 # Free, fully-offline local providers (Piper + Kokoro):
-local = ["piper-tts>=1.6.0", "kokoro-onnx>=0.4.0", "soundfile>=0.12"]
-openai = ["openai>=1.0"]          # paid provider (experimental)
+local = ["piper-tts==1.6.0", "kokoro-onnx==0.4.7", "soundfile==0.14.0"]
+openai = ["openai==2.46.0"]       # paid provider (experimental)
 
 [project.scripts]
 narrate = "narrate:main"
 narrate-ui = "app:main"
 
 [tool.setuptools]
-py-modules = ["narrate", "app"]
+py-modules = ["narrate", "providers", "app"]

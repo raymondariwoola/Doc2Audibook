@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import shutil
@@ -29,6 +30,8 @@ DEFAULT_VOICE = "en-US-AndrewNeural"
 DEFAULT_RATE = "-4%"          # a touch slower than 100% reads more naturally
 MAX_CHUNK_CHARS = 3000        # keep each edge-tts request comfortably small
 PAUSE_CUE = "…"          # an ellipsis on its own line = a spoken pause
+CACHE_SCHEMA_VERSION = 1
+CACHE_MANIFEST_NAME = ".narrate-cache.json"
 
 
 # ----------------------------------------------------------------------------
@@ -422,6 +425,65 @@ async def generate_chunks(
     return paths
 
 
+def narration_fingerprint(
+    chunks: list[str],
+    *,
+    provider: "providers.TTSProvider",
+    voice: str,
+    rate: str,
+    pitch: str,
+    max_chars: int,
+) -> str:
+    """Return a stable identity for every setting that affects chunk audio."""
+    payload = {
+        "schema": CACHE_SCHEMA_VERSION,
+        "chunks": chunks,
+        "provider": provider.id,
+        "provider_identity": provider.cache_identity(),
+        "voice": voice,
+        "rate": rate,
+        "pitch": pitch,
+        "max_chars": max_chars,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def prepare_chunk_cache(work_dir: Path, fingerprint: str) -> str:
+    """Prepare a work directory and invalidate only stale generated artifacts.
+
+    Returns ``"reused"`` when the manifest matches, otherwise ``"initialized"``
+    or ``"invalidated"``. A manifest is written before synthesis begins so an
+    interrupted render remains safely resumable.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = work_dir / CACHE_MANIFEST_NAME
+    previous = None
+    if manifest_path.exists():
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = None
+    if previous == {"schema": CACHE_SCHEMA_VERSION, "fingerprint": fingerprint}:
+        return "reused"
+
+    had_generated_files = False
+    for pattern in ("chunk_*", "concat_list.txt", "_concat.mp3"):
+        for artifact in work_dir.glob(pattern):
+            if artifact.is_file():
+                artifact.unlink()
+                had_generated_files = True
+
+    manifest = {"schema": CACHE_SCHEMA_VERSION, "fingerprint": fingerprint}
+    tmp = manifest_path.with_suffix(manifest_path.suffix + ".part")
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(manifest_path)
+    return "invalidated" if had_generated_files else "initialized"
+
+
 async def fetch_voices(provider_id: str = providers.DEFAULT_PROVIDER_ID) -> list[dict]:
     """Return a provider's voice catalog as plain dicts (ShortName/Gender/Locale),
     the shape the CLI and prototype already consume. Reusable by any UI."""
@@ -596,7 +658,7 @@ class AudiobookResult:
     work_dir: Path
 
 
-def build_audiobook(
+async def build_audiobook_async(
     input_path: Path,
     output: Path,
     *,
@@ -612,7 +674,7 @@ def build_audiobook(
     on_stage: Optional[Callable[[str, dict], None]] = None,
     on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> AudiobookResult:
-    """Run the full document -> narrated audio pipeline.
+    """Run the full document -> narrated audio pipeline asynchronously.
 
     `provider` selects the TTS engine (default "edge"; see providers.py).
     `on_stage(stage, info)` fires at "extracted", "assembling", and "done".
@@ -629,30 +691,40 @@ def build_audiobook(
         work_dir = output.with_name(output.stem + "_chunks")
     work_dir = Path(work_dir)
 
-    blocks = extract_blocks(input_path)
+    blocks = await asyncio.to_thread(extract_blocks, input_path)
     paragraphs = blocks_to_paragraphs(blocks, user_rules or [])
     chunks = chunk_paragraphs(paragraphs, max_chars)
     if not chunks:
         raise ValueError("No readable text was extracted from the document.")
     total_chars = sum(len(c) for c in chunks)
+    fingerprint = narration_fingerprint(
+        chunks,
+        provider=prov,
+        voice=voice,
+        rate=rate,
+        pitch=pitch,
+        max_chars=max_chars,
+    )
+    cache_status = prepare_chunk_cache(work_dir, fingerprint)
 
     if on_stage:
         on_stage("extracted", {
             "blocks": len(blocks), "paragraphs": len(paragraphs),
             "chunks": len(chunks), "chars": total_chars, "work_dir": str(work_dir),
+            "cache_status": cache_status,
         })
 
-    chunk_paths = asyncio.run(
-        generate_chunks(chunks, voice, rate, pitch, work_dir,
-                        on_chunk=on_chunk, provider=prov)
+    chunk_paths = await generate_chunks(
+        chunks, voice, rate, pitch, work_dir,
+        on_chunk=on_chunk, provider=prov,
     )
 
     if on_stage:
         on_stage("assembling", {"output": str(output), "fmt": fmt})
-    encode_output(chunk_paths, output, work_dir, fmt)
+    await asyncio.to_thread(encode_output, chunk_paths, output, work_dir, fmt)
 
     size = output.stat().st_size
-    duration = probe_duration(output)
+    duration = await asyncio.to_thread(probe_duration, output)
 
     if not keep_chunks:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -665,6 +737,40 @@ def build_audiobook(
     if on_stage:
         on_stage("done", {"duration": duration, "size": size})
     return result
+
+
+def build_audiobook(
+    input_path: Path,
+    output: Path,
+    *,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    pitch: str = DEFAULT_PITCH,
+    fmt: str = "mp3",
+    provider: str = providers.DEFAULT_PROVIDER_ID,
+    user_rules: Optional[list[tuple[str, str]]] = None,
+    work_dir: Optional[Path] = None,
+    keep_chunks: bool = False,
+    max_chars: int = MAX_CHUNK_CHARS,
+    on_stage: Optional[Callable[[str, dict], None]] = None,
+    on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
+) -> AudiobookResult:
+    """Synchronous compatibility wrapper around :func:`build_audiobook_async`."""
+    return asyncio.run(build_audiobook_async(
+        input_path,
+        output,
+        voice=voice,
+        rate=rate,
+        pitch=pitch,
+        fmt=fmt,
+        provider=provider,
+        user_rules=user_rules,
+        work_dir=work_dir,
+        keep_chunks=keep_chunks,
+        max_chars=max_chars,
+        on_stage=on_stage,
+        on_chunk=on_chunk,
+    ))
 
 
 # ----------------------------------------------------------------------------
@@ -757,6 +863,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Extracted  : {info['blocks']} blocks -> {info['paragraphs']} paragraphs "
                   f"-> {info['chunks']} chunks ({info['chars']:,} chars)")
             print(f"Work dir   : {info['work_dir']}  (resumable — existing chunks are skipped)")
+            if info.get("cache_status") == "invalidated":
+                print("Cache      : audio inputs changed; stale generated chunks were cleared")
             print("Synthesizing chunks:")
         elif stage == "assembling":
             verb = "stream copy" if info["fmt"] == "mp3" else f"transcode -> {info['fmt']}"

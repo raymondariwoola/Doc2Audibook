@@ -3,9 +3,9 @@
 Doc2Audiobook — Gradio prototype UI (Phase 1 of ROADMAP.md).
 
 A thin browser front-end over the tested `narrate.py` engine: attach a document,
-pick a TTS **provider** (free edge-tts, offline Piper, or paid OpenAI), browse its
-voices and hear a sample before committing, tune pitch & pace, choose an output
-format, and download the narrated audiobook.
+pick a TTS **provider** (Edge, Piper, Kokoro, Apple, or experimental OpenAI),
+browse its voices and hear a sample before committing, tune pitch & pace, choose
+an output format, and download the narrated audiobook.
 
 Run:
     python app.py            # opens http://127.0.0.1:7860
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import tempfile
 from pathlib import Path
 
@@ -149,14 +150,37 @@ def _provider_note(provider_id: str) -> str:
     return "\n\n".join(lines)
 
 
-def _cache_dir_for(input_path: Path, provider_id: str, voice: str,
-                   rate: str, pitch: str, max_chars: int) -> Path:
-    """Chunk cache keyed by content + provider + voice settings, so re-running
-    with the same choices resumes instantly (any change starts fresh)."""
+def _render_digest(input_path: Path, provider_id: str, voice: str,
+                   rate: str, pitch: str, max_chars: int,
+                   rules: list[tuple[str, str]]) -> str:
+    """Hash every UI input that can affect the rendered audio."""
     h = hashlib.sha1()
     h.update(input_path.read_bytes())
-    h.update(f"|{provider_id}|{voice}|{rate}|{pitch}|{max_chars}".encode())
-    return CACHE_DIR / h.hexdigest()[:16]
+    settings = {
+        "provider": provider_id,
+        "provider_identity": providers.get_provider(provider_id).cache_identity(),
+        "voice": voice,
+        "rate": rate,
+        "pitch": pitch,
+        "max_chars": max_chars,
+        "rules": rules,
+    }
+    h.update(json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _cache_dir_for(input_path: Path, provider_id: str, voice: str,
+                   rate: str, pitch: str, max_chars: int,
+                   rules: list[tuple[str, str]]) -> Path:
+    digest = _render_digest(
+        input_path, provider_id, voice, rate, pitch, max_chars, rules
+    )
+    return CACHE_DIR / digest
+
+
+def _output_path_for(input_path: Path, fmt: str, digest: str) -> Path:
+    """Return a collision-safe but still recognizable generated output path."""
+    return OUTPUT_DIR / f"{input_path.stem}-{digest[:10]}.{fmt}"
 
 
 # ----------------------------------------------------------------------------
@@ -237,10 +261,14 @@ def generate(document, provider_id, voice_label, rate, pitch, fmt, rules_text,
         src, dst = line.split("=", 1)
         rules.append((src, dst))
 
+    digest = _render_digest(
+        input_path, provider_id, short, rate_s, pitch_s,
+        narrate.MAX_CHUNK_CHARS, rules,
+    )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output = OUTPUT_DIR / f"{input_path.stem}.{fmt}"
+    output = _output_path_for(input_path, fmt, digest)
     work_dir = _cache_dir_for(input_path, provider_id, short, rate_s, pitch_s,
-                              narrate.MAX_CHUNK_CHARS)
+                              narrate.MAX_CHUNK_CHARS, rules)
 
     progress(0.02, desc="Extracting & cleaning text…")
 
@@ -359,7 +387,8 @@ def build_ui() -> gr.Blocks:
 
         gr.Markdown(
             "<small>Prototype (Phase 1). Engine: `narrate.py` • Providers: `providers.py` "
-            "(edge-tts free · Piper offline · OpenAI paid). See `ROADMAP.md`.</small>"
+            "(Edge free · Piper/Kokoro offline · Apple local · OpenAI paid). "
+            "See `ROADMAP.md`.</small>"
         )
     return demo
 

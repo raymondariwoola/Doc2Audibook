@@ -34,6 +34,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
+PIP_VERSION = "26.1.2"
+SETUPTOOLS_VERSION = "83.0.0"
 
 
 def venv_python() -> Path:
@@ -52,7 +54,16 @@ def step(msg: str) -> None:
 def ensure_venv() -> None:
     step("1/4  Virtual environment")
     if venv_python().exists():
-        print(f"  .venv already exists ({venv_python()})")
+        check = subprocess.run(
+            [str(venv_python()), "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            print("  .venv exists but pip is missing; repairing interrupted setup...")
+            run([str(venv_python()), "-m", "ensurepip", "--upgrade"])
+        else:
+            print(f"  .venv already exists ({venv_python()})")
         return
     print(f"  creating {VENV} …")
     venv.EnvBuilder(with_pip=True, upgrade_deps=True).create(str(VENV))
@@ -61,7 +72,8 @@ def ensure_venv() -> None:
 def install_deps(minimal: bool, no_ui: bool, no_local: bool) -> None:
     step("2/4  Python dependencies")
     py = str(venv_python())
-    run([py, "-m", "pip", "install", "--upgrade", "pip"])
+    run([py, "-m", "pip", "install", f"pip=={PIP_VERSION}"])
+    run([py, "-m", "pip", "install", f"setuptools=={SETUPTOOLS_VERSION}"])
     req_files = [ROOT / "requirements.txt"]
     if not minimal:
         if not no_ui:
@@ -77,7 +89,7 @@ def install_deps(minimal: bool, no_ui: bool, no_local: bool) -> None:
 def check_ffmpeg() -> None:
     step("3/4  ffmpeg (external dependency)")
     if shutil.which("ffmpeg"):
-        print("  ffmpeg found ✓")
+        print("  [ok] ffmpeg found")
         return
     instructions = {
         "darwin": "brew install ffmpeg",
@@ -86,7 +98,7 @@ def check_ffmpeg() -> None:
     }
     plat = "win32" if os.name == "nt" else sys.platform
     hint = instructions.get(plat, "See https://ffmpeg.org/download.html")
-    print("  ⚠️ ffmpeg NOT found on PATH. Install it, then re-run this script:")
+    print("  [warning] ffmpeg NOT found on PATH. Install it, then re-run this script:")
     print(f"     {hint}")
 
 
@@ -104,7 +116,7 @@ def main(argv: list[str]) -> int:
     no_local = "--no-local" in argv
     no_voices = "--no-voices" in argv
 
-    print("Doc2Audiobook — bootstrap")
+    print("Doc2Audiobook - bootstrap")
     print(f"Python: {sys.version.split()[0]}  |  Platform: {sys.platform}  |  Root: {ROOT}")
 
     ensure_venv()

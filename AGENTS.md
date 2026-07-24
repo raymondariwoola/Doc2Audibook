@@ -33,7 +33,9 @@ python bootstrap.py
 Idempotent; safe to re-run after every `git pull`. It: creates `.venv`, installs
 pinned deps (core + UI + local providers), checks `ffmpeg` (prints install hints
 if missing), and downloads the offline voice models in
-[`voices.manifest.json`](voices.manifest.json) via [`sync_voices.py`](sync_voices.py).
+[`voices.manifest.json`](voices.manifest.json) via [`sync_voices.py`](sync_voices.py),
+verifying every model against its recorded SHA-256 digest. It also repairs an
+interrupted `.venv` whose Python exists but whose pip installation is incomplete.
 Works on macOS/Windows/Linux (pure-stdlib bootstrap, cross-platform venv paths).
 
 **What transfers via git and what doesn't:**
@@ -74,6 +76,10 @@ provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
   default and preserve `narrate`'s public function signatures. Verify the CLI and
   the `app.py` callbacks still work after provider changes.
 - **Never commit** `.venv/`, voice models, or generated audio (see `.gitignore`).
+- **Cache safety:** `narrate.py` fingerprints cleaned chunks plus provider/model,
+  voice, pitch, rate, and chunk size. Keep that identity current when adding any
+  new audio-affecting option. UI render digests must additionally include every
+  input that changes output, including replacement rules.
 - **Git:** the user often commits/pushes manually — do not commit or push unless
   explicitly asked. Branch before committing to `main` if you are asked to commit.
 - **Honesty about testing:** the `openai` provider is implemented but unverified
@@ -86,6 +92,7 @@ provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
 
 ```bash
 .venv/bin/python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py
+.venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python narrate.py --list-voices en-US
 .venv/bin/python narrate.py sample.docx --provider piper --voice en_US-lessac-medium
 .venv/bin/python -c "import providers as P; print([p.id for p in P.available_providers()])"

@@ -190,6 +190,34 @@ Goal: installable app for macOS **and** Windows.
 
 ---
 
+## Reliability remediation
+
+The 2026-07-24 repository audit found the following concrete risks. This list is
+the tracked source of truth until every item is fixed and verified.
+
+- [x] **Automated coverage:** tests cover all extractors, speech cleanup,
+      chunking, rule parsing, resumability, UI render identity, integrity checks,
+      provider rate conversions, and the async pipeline.
+- [x] **Installed-package completeness:** the built wheel contains
+      `narrate.py`, `providers.py`, and `app.py`.
+- [x] **Reproducible dependencies:** direct runtime, optional, and build
+      dependencies use exact versions in requirements and package metadata.
+- [x] **Safe CLI resumability:** a cache manifest fingerprints cleaned chunks,
+      provider/model identity, voice, rate, pitch, and chunk size; changed inputs
+      invalidate stale generated artifacts.
+- [x] **Safe UI caching:** replacement rules and provider/model identity are part
+      of the UI render digest as well as the engine-level cache manifest.
+- [x] **Collision-safe UI outputs:** generated filenames include their render
+      digest, so different same-stem documents do not overwrite one another.
+- [x] **Model integrity:** every manifest-managed artifact has a SHA-256 digest;
+      existing and newly downloaded files are verified before use.
+- [x] **Async integration:** `build_audiobook_async(...)` is awaitable by a
+      future FastAPI service; `build_audiobook(...)` remains compatible.
+- [x] **Documentation consistency:** README, UI descriptions, agent guidance,
+      setup behavior, and this roadmap reflect the implemented provider set.
+
+---
+
 ## Decisions & changelog
 
 Record notable choices here so future-us remembers the *why*.
@@ -226,3 +254,11 @@ Record notable choices here so future-us remembers the *why*.
   Model files stay gitignored and are re-fetched per machine. Added agent docs
   (`AGENTS.md` canonical, `CLAUDE.md` + `.github/copilot-instructions.md` point to
   it) documenting the machine-switch protocol so agents behave consistently.
+- **2026-07-24** — Completed the reliability audit remediation. Added a 17-test
+  standard-library suite; safe content/settings/provider-model cache manifests;
+  rule-aware UI render keys and collision-safe output names; an awaitable
+  `build_audiobook_async(...)`; complete setuptools module metadata; exact direct
+  dependency pins; and SHA-256 verification for every manifest-managed voice
+  artifact. Bootstrap now repairs partial virtual environments and uses
+  redirect-safe console output. Verified Piper and Kokoro end-to-end on Windows
+  (synthesize → MP3 → ffmpeg assembly); OpenAI remains key-blocked and unverified.

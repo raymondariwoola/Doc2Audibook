@@ -14,6 +14,9 @@ which voice service is used:
 Implementations:
   - EdgeTTSProvider  — Microsoft edge-tts, FREE, no API key. The default and the
     reference implementation. Owns the corporate-proxy SSL fallback.
+  - PiperProvider    — local offline neural TTS using downloaded voice models.
+  - KokoroProvider   — local offline Kokoro-82M through ONNX Runtime.
+  - AppleSayProvider — macOS's built-in offline `say` command.
   - OpenAIProvider   — OpenAI TTS, PAID (needs OPENAI_API_KEY). *Experimental:*
     implemented against the documented API but not yet verified end-to-end here.
 
@@ -118,6 +121,10 @@ class TTSProvider(ABC):
     def is_available(self) -> bool:
         """Whether the provider can be used right now (package present, key set)."""
         return True
+
+    def cache_identity(self) -> str:
+        """Identity of provider state that can change synthesized chunk audio."""
+        return self.id
 
     @abstractmethod
     def capabilities(self) -> Capabilities: ...
@@ -251,6 +258,9 @@ class OpenAIProvider(TTSProvider):
     def is_available(self) -> bool:
         return bool(os.environ.get("OPENAI_API_KEY")) and self._has_sdk()
 
+    def cache_identity(self) -> str:
+        return f"{self.id}:{self.model}"
+
     def capabilities(self) -> Capabilities:
         return Capabilities(
             provider_id=self.id,
@@ -370,6 +380,15 @@ class PiperProvider(TTSProvider):
 
     def is_available(self) -> bool:
         return self._has_pkg() and bool(self._models())
+
+    def cache_identity(self) -> str:
+        files: list[tuple[str, int, int]] = []
+        for model in self._models():
+            for path in (model, model.with_suffix(model.suffix + ".json")):
+                if path.exists():
+                    stat = path.stat()
+                    files.append((path.name, stat.st_size, stat.st_mtime_ns))
+        return json.dumps([self.id, files], separators=(",", ":"))
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
@@ -570,6 +589,14 @@ class KokoroProvider(TTSProvider):
     def is_available(self) -> bool:
         model, voices = self._paths()
         return self._has_pkg() and model.exists() and voices.exists()
+
+    def cache_identity(self) -> str:
+        files: list[tuple[str, int, int]] = []
+        for path in self._paths():
+            if path.exists():
+                stat = path.stat()
+                files.append((path.name, stat.st_size, stat.st_mtime_ns))
+        return json.dumps([self.id, files], separators=(",", ":"))
 
     def capabilities(self) -> Capabilities:
         return Capabilities(

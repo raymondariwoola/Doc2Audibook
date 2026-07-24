@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Download the offline voice models listed in `voices.manifest.json`.
+Download and SHA-256 verify the offline voice models in `voices.manifest.json`.
 
 Model files are too large for git, so they are gitignored and fetched per machine
-by this script. It is idempotent — existing, non-empty files are skipped — so it
-doubles as "sync my voices to the manifest" after pulling changes.
+by this script. It is idempotent: existing files are skipped only after their
+recorded digest matches, so it also detects partial or altered model files.
 
 Run inside the project venv (so `certifi` is available):
     python sync_voices.py
@@ -17,7 +17,9 @@ urllib otherwise fails TLS verification ("unable to get local issuer certificate
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import ssl
 import sys
@@ -40,16 +42,40 @@ def _ssl_context() -> ssl.SSLContext:
 CTX = _ssl_context()
 
 
-def _download(url: str, dst: Path) -> str:
-    if dst.exists() and dst.stat().st_size > 0:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download(url: str, dst: Path, expected_sha256: str) -> str:
+    if dst.exists() and dst.stat().st_size > 0 and _sha256(dst) == expected_sha256:
         return "skip"
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "doc2audiobook-sync"})
     with urllib.request.urlopen(req, context=CTX) as resp, open(tmp, "wb") as fh:
         shutil.copyfileobj(resp, fh)
+    actual = _sha256(tmp)
+    if actual != expected_sha256:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"SHA-256 mismatch for {dst.name}: expected {expected_sha256}, got {actual}"
+        )
     tmp.replace(dst)
     return "downloaded"
+
+
+def _checksums(manifest: dict) -> dict[str, str]:
+    checksums = manifest.get("sha256")
+    if not isinstance(checksums, dict):
+        raise ValueError("voices.manifest.json must contain a 'sha256' object")
+    for name, digest in checksums.items():
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise ValueError(f"Invalid SHA-256 for '{name}'")
+    return {str(name): str(digest).lower() for name, digest in checksums.items()}
 
 
 def _piper_file_urls(hf_base: str, name: str) -> dict[str, str]:
@@ -72,6 +98,11 @@ def sync(manifest_path: Path = MANIFEST) -> int:
         print(f"error: {manifest_path} not found", file=sys.stderr)
         return 1
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        checksums = _checksums(manifest)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     total_downloaded = total_skipped = 0
 
     # ---- Piper voices ----
@@ -82,12 +113,15 @@ def sync(manifest_path: Path = MANIFEST) -> int:
         print(f"Piper voices -> {voice_dir}")
         for name in piper["voices"]:
             for fname, url in _piper_file_urls(hf_base, name).items():
+                if fname not in checksums:
+                    print(f"error: no SHA-256 recorded for {fname}", file=sys.stderr)
+                    return 1
                 try:
-                    status = _download(url, voice_dir / fname)
+                    status = _download(url, voice_dir / fname, checksums[fname])
                 except Exception as exc:  # noqa: BLE001
-                    print(f"  ✗ {fname}: {exc}", file=sys.stderr)
+                    print(f"  [error] {fname}: {exc}", file=sys.stderr)
                     return 2
-                print(f"  {'·' if status == 'skip' else '↓'} {fname} ({status})")
+                print(f"  {'-' if status == 'skip' else 'download'} {fname} ({status})")
                 total_downloaded += status == "downloaded"
                 total_skipped += status == "skip"
 
@@ -99,12 +133,15 @@ def sync(manifest_path: Path = MANIFEST) -> int:
         print(f"Kokoro model -> {model_dir}")
         for fname in kokoro["files"]:
             url = f"{release_base}/{fname}"
+            if fname not in checksums:
+                print(f"error: no SHA-256 recorded for {fname}", file=sys.stderr)
+                return 1
             try:
-                status = _download(url, model_dir / fname)
+                status = _download(url, model_dir / fname, checksums[fname])
             except Exception as exc:  # noqa: BLE001
-                print(f"  ✗ {fname}: {exc}", file=sys.stderr)
+                print(f"  [error] {fname}: {exc}", file=sys.stderr)
                 return 2
-            print(f"  {'·' if status == 'skip' else '↓'} {fname} ({status})")
+            print(f"  {'-' if status == 'skip' else 'download'} {fname} ({status})")
             total_downloaded += status == "downloaded"
             total_skipped += status == "skip"
 
