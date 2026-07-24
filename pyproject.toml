@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doc2audiobook"
+version = "1.0.0"
+description = "Convert .docx/.pdf/.txt/.md documents into narrated audiobook-style MP3s using free edge-tts neural voices."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "edge-tts>=6.1.0",
+    "python-docx>=1.1.0",
+    "pypdf>=4.0.0",
+]
+
+[project.scripts]
+narrate = "narrate:main"
+
+[tool.setuptools]
+py-modules = ["narrate"]

@@ -1,0 +1,8 @@
+# Python dependencies for `narrate`.
+#   pip install -r requirements.txt
+#
+# External (non-pip) dependency: ffmpeg  (see README for install instructions).
+
+edge-tts>=6.1.0      # Microsoft's free neural text-to-speech voices
+python-docx>=1.1.0   # .docx parsing (document-order body walk + tables)
+pypdf>=4.0.0         # .pdf text extraction
