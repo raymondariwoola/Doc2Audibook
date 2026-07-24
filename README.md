@@ -19,6 +19,31 @@ a full local web app, and native macOS/Windows desktop builds).
 
 ---
 
+## Quick start (and switching machines)
+
+One command sets up **everything** on macOS, Windows, or Linux — and it's the
+same command you run when you move to another machine or clone fresh:
+
+```bash
+python bootstrap.py
+```
+
+It creates a `.venv`, installs dependencies, checks for `ffmpeg` (with install
+hints if missing), and downloads the offline voice models listed in
+[`voices.manifest.json`](voices.manifest.json). It's **idempotent** — re-run it
+after every `git pull` to stay in lockstep.
+
+**What syncs across machines:** all code, the roadmap, and *which* voices you use
+(the manifest) travel via git. The large bits — the `.venv`, the voice model
+files, generated audio, and the resumable chunk cache — are gitignored and
+rebuilt/re-fetched locally by `bootstrap.py`. So on a new machine: `git pull`
+→ `python bootstrap.py` → you're back where you left off. To add a voice for all
+machines, edit `voices.manifest.json`, commit, and run `python sync_voices.py`
+on each. AI agents working in this repo should read
+[`AGENTS.md`](AGENTS.md) for this workflow.
+
+---
+
 ## Features
 
 - **Real neural voices** via `edge-tts` — pick any with `--voice`, list them with `--list-voices`.
@@ -49,6 +74,9 @@ a full local web app, and native macOS/Windows desktop builds).
 
 ## Installation
 
+The easiest path is `python bootstrap.py` (see [Quick start](#quick-start-and-switching-machines)
+above). To do it by hand instead:
+
 ### 1. Python dependencies
 
 Requires **Python 3.9+**.
@@ -57,13 +85,16 @@ Requires **Python 3.9+**.
 # from the project folder
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt                 # core CLI (edge-tts online)
+pip install -r requirements-ui.txt              # optional: browser UI
+pip install -r requirements-local.txt           # optional: offline Piper/Kokoro
 ```
 
-Or install it as a command (`narrate`) on your PATH:
+Or install it as a command (`narrate`) on your PATH, with optional extras:
 
 ```bash
-pip install -e .
+pip install -e .                    # core
+pip install -e ".[ui,local]"        # + browser UI + offline providers
 ```
 
 ### 2. `ffmpeg` (external dependency — required)
@@ -179,11 +210,16 @@ Speech engines sit behind a small `TTSProvider` interface in
 [`providers.py`](providers.py), so the CLI and UI stay the same regardless of
 engine. Pick one with `--provider`:
 
-| Provider | Cost | Notes |
-|---|---|---|
-| `edge` *(default)* | Free | Microsoft edge-tts neural voices, no key. Needs internet. |
-| `piper` | Free | **Fully offline** neural TTS. Needs `piper-tts` + a downloaded voice model. Rate supported; pitch not. |
-| `openai` | Paid | OpenAI TTS. **Experimental** — set `OPENAI_API_KEY`; rate maps to `speed`, pitch unsupported. Not yet verified end-to-end. |
+| Provider | Cost | Offline | Notes |
+|---|---|---|---|
+| `edge` *(default)* | Free | No | Microsoft edge-tts neural voices, no key. Needs internet. |
+| `piper` | Free | Yes | **Fully offline** neural TTS. Needs `piper-tts` + a model in `piper_voices/`. Rate ✓, pitch ✗. |
+| `kokoro` | Free | Yes | **Fully offline** Kokoro-82M neural TTS (higher quality). Needs `kokoro-onnx` + model in `kokoro_models/`. Rate ✓, pitch ✗. |
+| `apple` | Free | Yes | macOS built-in `say`. Zero downloads. macOS only. Rate ✓, pitch ✗. |
+| `openai` | Paid | No | OpenAI TTS. **Experimental** — set `OPENAI_API_KEY`; rate maps to `speed`, pitch unsupported. Not yet verified end-to-end. |
+
+Offline models are managed by the manifest — run `python sync_voices.py` (or
+`python bootstrap.py`) to download exactly what `voices.manifest.json` lists.
 
 ```bash
 narrate --provider edge --list-voices en-US        # free online voices
@@ -192,21 +228,30 @@ export OPENAI_API_KEY=sk-...                        # to try the paid provider
 narrate mydoc.docx --provider openai --voice nova
 ```
 
-### Offline with Piper
+### Offline providers (Piper & Kokoro)
+
+The simplest way is `python bootstrap.py`, which installs the packages and
+downloads the models from `voices.manifest.json`. Manually:
 
 ```bash
-pip install piper-tts
-# Download a voice once (then no network is needed at all):
-python -m piper.download_voices en_US-lessac-medium --download-dir piper_voices
-narrate mydoc.docx --provider piper --voice en_US-lessac-medium
+pip install -r requirements-local.txt        # piper-tts, kokoro-onnx, soundfile
+python sync_voices.py                         # download models per the manifest
+narrate mydoc.docx --provider piper  --voice en_US-lessac-medium
+narrate mydoc.docx --provider kokoro --voice af_heart
 ```
 
-Models live in `piper_voices/` by default (override with `PIPER_VOICE_DIR`).
-Browse available Piper voices at
-<https://huggingface.co/rhasspy/piper-voices>. In the browser UI, Piper appears
-in the provider dropdown once at least one model is present.
+- **Piper** models live in `piper_voices/` (override with `PIPER_VOICE_DIR`).
+  Browse voices at <https://huggingface.co/rhasspy/piper-voices>; add names to the
+  manifest's `piper.voices` list.
+- **Kokoro** models (`kokoro-v1.0.onnx`, `voices-v1.0.bin`) live in
+  `kokoro_models/` (override with `KOKORO_MODEL_DIR`); voices like `af_heart`,
+  `am_adam`. Models from <https://github.com/thewh1teagle/kokoro-onnx/releases>.
+- **Apple `say`** (macOS) needs nothing — it appears automatically on a Mac.
 
-Adding a provider (Kokoro/ElevenLabs/Azure) means subclassing `TTSProvider` and
+Each offline provider appears in the CLI (`--provider`) and the browser UI's
+provider dropdown once its package + model are present.
+
+Adding a provider (ElevenLabs/Azure/…) means subclassing `TTSProvider` and
 registering it — see [`ROADMAP.md`](ROADMAP.md) Phase 2.
 
 ---

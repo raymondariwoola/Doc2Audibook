@@ -1,0 +1,11 @@
+# Optional dependencies for the FREE, FULLY-OFFLINE local TTS providers.
+#   pip install -r requirements-local.txt
+#
+# After installing, download the voice models with:  python sync_voices.py
+# (or the whole setup at once with:  python bootstrap.py)
+#
+# Not needed for the edge-tts (online) or apple (macOS built-in) providers.
+
+piper-tts>=1.6.0     # Piper: offline neural voices (.onnx models)
+kokoro-onnx>=0.4.0   # Kokoro-82M: higher-quality offline neural voices
+soundfile>=0.12      # WAV writing for the Kokoro provider

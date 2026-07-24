@@ -117,10 +117,14 @@ edge-tts is the default provider and all existing signatures were preserved.
       documented API but **not yet verified end-to-end** (no key here).
 - [x] Provider registry + `--provider` CLI flag; `available_providers()` reports
       which are usable right now.
-- [x] **Free/local:** `PiperProvider` — fully offline, cross-platform, tested
-      end-to-end (synthesize → MP3 → assemble → resume). Rate via `length_scale`,
-      pitch unsupported (advertised via capabilities). Models in `piper_voices/`.
-- [ ] **Free/local (more):** `KokoroProvider`, `AppleSayProvider`.
+- [x] **Free/local — all done:** `PiperProvider` (offline neural), `KokoroProvider`
+      (offline Kokoro-82M, higher quality), `AppleSayProvider` (macOS built-in,
+      zero downloads). All offline, rate-capable, pitch unsupported (advertised via
+      capabilities), tested end-to-end (synthesize → MP3 → assemble → resume).
+- [x] **Reproducibility:** `voices.manifest.json` + `sync_voices.py` +
+      `bootstrap.py` — one command sets up any machine (deps, ffmpeg check, model
+      downloads) so switching machines reaches parity. Agent docs: `AGENTS.md`,
+      `CLAUDE.md`, `.github/copilot-instructions.md`.
 - [ ] **Paid:** `ElevenLabsProvider`, `AzureProvider`; verify `OpenAIProvider` with a real key.
 - [ ] Secure key storage (OS keychain; currently env var / `.env`, never committed).
 - [ ] Per-voice **sample cache** so previews are instant after first play.
@@ -132,10 +136,10 @@ edge-tts is the default provider and all existing signatures were preserved.
 
 | Provider | Cost | Strengths | Notes |
 |---|---|---|---|
-| **edge-tts** | Free | Natural, 300+ voices, no key | 24 kHz mono ceiling |
-| **Kokoro** | Free/local | Great quality for its size, offline | Small model, Apache-licensed |
+| **edge-tts** ✅ | Free | Natural, 300+ voices, no key | Default. 24 kHz mono ceiling |
+| **Kokoro** ✅ | Free/local | Great quality for its size, offline | Implemented. ~340 MB model |
 | **Piper** ✅ | Free/local | Fast, fully offline, cross-platform | Implemented. Lower ceiling than neural cloud |
-| **Apple say** | Free/local | Built into macOS | Premium voices only-OK |
+| **Apple say** ✅ | Free/local | Built into macOS, zero downloads | Implemented. macOS only |
 | **OpenAI TTS** | Paid | Cheap, *steerable* tone | `gpt-4o-mini-tts` |
 | **ElevenLabs** | Paid | Best naturalness + cloning | Limited free tier |
 | **Azure HD** | Paid | HD voices, SSML, high bitrate | Same family as edge-tts |
@@ -212,3 +216,13 @@ Record notable choices here so future-us remembers the *why*.
   providers. Note: on the python.org macOS build, `piper.download_voices` fails TLS
   verification (urllib uses no CA store by default) — documented `curl`/certifi as
   the workaround for fetching models; runtime synthesis is fully offline.
+- **2026-07-24** — Completed the free provider set: added `KokoroProvider`
+  (`kokoro-onnx`, ~340 MB model, higher quality) and `AppleSayProvider` (macOS
+  built-in `say`, zero downloads). Shared `_transcode_wav_to_mp3` helper across all
+  local providers. **Cross-machine reproducibility:** added `voices.manifest.json`
+  (git-tracked source of truth for models), `sync_voices.py` (idempotent downloader
+  using certifi's CA bundle — the clean fix for the urllib TLS issue), and
+  `bootstrap.py` (one command: venv + deps + ffmpeg check + model sync, cross-OS).
+  Model files stay gitignored and are re-fetched per machine. Added agent docs
+  (`AGENTS.md` canonical, `CLAUDE.md` + `.github/copilot-instructions.md` point to
+  it) documenting the machine-switch protocol so agents behave consistently.

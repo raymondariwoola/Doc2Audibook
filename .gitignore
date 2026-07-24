@@ -9,7 +9,14 @@ outputs/
 .narrate_cache/
 .gradio/
 
-# Piper voice models (large; download locally per README)
+# Offline voice models (large; fetched per machine via `python sync_voices.py`)
 piper_voices/
+kokoro_models/
+
+# stray generated audio
+*.mp3
+*.m4a
+*.wav
+sample.docx
 
 *.DS_Store

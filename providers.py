@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -303,6 +304,31 @@ class OpenAIProvider(TTSProvider):
 
 
 # ----------------------------------------------------------------------------
+# Shared helper: encode a WAV file to MP3 so every local provider produces the
+# same chunk codec (keeps the resumable-chunk + ffmpeg stream-copy assembly
+# uniform across providers).
+# ----------------------------------------------------------------------------
+
+
+def _transcode_wav_to_mp3(wav_path: Path, out_path: Path, bitrate: str = "64k") -> None:
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is required to encode local-provider audio to MP3.")
+    tmp = out_path.with_suffix(out_path.suffix + ".part")
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-i", str(wav_path), "-c:a", "libmp3lame", "-b:a", bitrate,
+           "-f", "mp3", str(tmp)]   # .part extension needs an explicit format
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    wav_path.unlink(missing_ok=True)
+    if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg failed encoding audio:\n{result.stderr.strip()}")
+    if tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("Local provider produced an empty audio file")
+    tmp.replace(out_path)
+
+
+# ----------------------------------------------------------------------------
 # PiperProvider — free, fully offline, cross-platform neural TTS.
 # Needs the `piper-tts` package and at least one downloaded voice model
 # (an .onnx + .onnx.json pair) in the voice directory. No network at runtime.
@@ -398,8 +424,6 @@ class PiperProvider(TTSProvider):
         if not self._has_pkg():
             raise RuntimeError("The `piper-tts` package is not installed. "
                                "`pip install piper-tts`.")
-        if not shutil.which("ffmpeg"):
-            raise RuntimeError("ffmpeg is required to encode Piper audio to MP3.")
 
         length_scale = _rate_str_to_length_scale(rate)
 
@@ -412,20 +436,198 @@ class PiperProvider(TTSProvider):
                 voice.synthesize_wav(
                     text, wav_file, syn_config=SynthesisConfig(length_scale=length_scale)
                 )
-            # Transcode to MP3 so chunks share a codec for ffmpeg stream-copy.
-            tmp = out_path.with_suffix(out_path.suffix + ".part")
-            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                   "-i", str(wav_tmp), "-c:a", "libmp3lame", "-b:a", "64k",
-                   "-f", "mp3", str(tmp)]   # .part extension needs explicit format
+            _transcode_wav_to_mp3(wav_tmp, out_path)
+
+        await asyncio.to_thread(_run)
+
+
+# ----------------------------------------------------------------------------
+# AppleSayProvider — free, fully offline, built into macOS (no packages, no
+# downloads). macOS only; is_available() is False elsewhere.
+# ----------------------------------------------------------------------------
+
+
+def _rate_str_to_wpm(rate: str, base: int = 180) -> int:
+    """Map an edge-style rate ('-4%') to an Apple `say` words-per-minute value."""
+    try:
+        pct = float(rate.strip().rstrip("%"))
+    except ValueError:
+        pct = 0.0
+    return int(max(80, min(500, base * (1.0 + pct / 100.0))))
+
+
+class AppleSayProvider(TTSProvider):
+    id = "apple"
+    label = "Apple say (macOS, offline)"
+
+    def is_available(self) -> bool:
+        return sys.platform == "darwin" and bool(shutil.which("say"))
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            provider_id=self.id,
+            needs_api_key=False,
+            supports_rate=True,           # via `say -r` (words per minute)
+            supports_pitch=False,
+            supports_voice_list=True,
+            supports_cloning=False,
+            output_sample_rate_hz=22050,
+            notes="Built into macOS, fully offline, no downloads. macOS only.",
+        )
+
+    async def list_voices(self) -> list[VoiceInfo]:
+        if not self.is_available():
+            return []
+        proc = await asyncio.to_thread(
+            subprocess.run, ["say", "-v", "?"], capture_output=True, text=True
+        )
+        voices: list[VoiceInfo] = []
+        # Lines look like: "Bad News            en_US    # Hello! ..."
+        pattern = re.compile(r"^(.+?)\s{2,}([a-z]{2}_[A-Z]{2})\b")
+        for line in proc.stdout.splitlines():
+            m = pattern.match(line)
+            if not m:
+                continue
+            name, locale = m.group(1).strip(), m.group(2)
+            voices.append(VoiceInfo(
+                id=name, label=name, gender="", locale=locale, provider=self.id,
+                raw={"ShortName": name, "Locale": locale, "Gender": ""},
+            ))
+        return voices
+
+    async def synthesize(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> None:
+        if not self.is_available():
+            raise RuntimeError("Apple `say` is only available on macOS.")
+        wpm = _rate_str_to_wpm(rate)
+
+        def _run() -> None:
+            # Feed text via a temp file to avoid shell-quoting / arg-length issues.
+            txt = out_path.with_suffix(".say.txt")
+            txt.write_text(text, encoding="utf-8")
+            aiff = out_path.with_suffix(".say.aiff")
+            cmd = ["say", "-v", voice_id, "-r", str(wpm), "-o", str(aiff), "-f", str(txt)]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            wav_tmp.unlink(missing_ok=True)
+            txt.unlink(missing_ok=True)
             if result.returncode != 0:
-                tmp.unlink(missing_ok=True)
-                raise RuntimeError(f"ffmpeg failed encoding Piper audio:\n{result.stderr.strip()}")
-            if tmp.stat().st_size == 0:
-                tmp.unlink(missing_ok=True)
-                raise RuntimeError("Piper produced an empty audio file")
-            tmp.replace(out_path)
+                aiff.unlink(missing_ok=True)
+                raise RuntimeError(f"`say` failed:\n{result.stderr.strip()}")
+            _transcode_wav_to_mp3(aiff, out_path)   # ffmpeg reads AIFF fine
+
+        await asyncio.to_thread(_run)
+
+
+# ----------------------------------------------------------------------------
+# KokoroProvider — free, fully offline, cross-platform neural TTS (Kokoro-82M
+# via onnxruntime). Needs the `kokoro-onnx` package plus two model files:
+#   kokoro-v1.0.onnx  and  voices-v1.0.bin
+# in the model directory (default 'kokoro_models', override with KOKORO_MODEL_DIR).
+# Download once from:
+#   https://github.com/thewh1teagle/kokoro-onnx/releases
+# ----------------------------------------------------------------------------
+
+KOKORO_MODEL_DIR = Path(os.environ.get("KOKORO_MODEL_DIR", "kokoro_models"))
+_KOKORO_MODEL = "kokoro-v1.0.onnx"
+_KOKORO_VOICES = "voices-v1.0.bin"
+
+# Kokoro voice names start with a language letter + a gender letter (e.g.
+# "af_heart" = American-English female). Map the leading letter to lang/locale.
+_KOKORO_LANG = {
+    "a": ("en-us", "en-US"), "b": ("en-gb", "en-GB"), "e": ("es", "es-ES"),
+    "f": ("fr-fr", "fr-FR"), "h": ("hi", "hi-IN"), "i": ("it", "it-IT"),
+    "j": ("ja", "ja-JP"), "p": ("pt-br", "pt-BR"), "z": ("cmn", "zh-CN"),
+}
+
+
+def _rate_str_to_speed_kokoro(rate: str) -> float:
+    try:
+        pct = float(rate.strip().rstrip("%"))
+    except ValueError:
+        pct = 0.0
+    return max(0.5, min(2.0, 1.0 + pct / 100.0))
+
+
+class KokoroProvider(TTSProvider):
+    id = "kokoro"
+    label = "Kokoro (local, offline)"
+
+    def __init__(self, model_dir: Optional[Path] = None) -> None:
+        self.model_dir = Path(model_dir) if model_dir else KOKORO_MODEL_DIR
+        self._kokoro = None   # cached Kokoro instance (model load is expensive)
+
+    def _has_pkg(self) -> bool:
+        try:
+            import kokoro_onnx  # noqa: F401
+            import soundfile    # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _paths(self) -> tuple[Path, Path]:
+        return self.model_dir / _KOKORO_MODEL, self.model_dir / _KOKORO_VOICES
+
+    def is_available(self) -> bool:
+        model, voices = self._paths()
+        return self._has_pkg() and model.exists() and voices.exists()
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            provider_id=self.id,
+            needs_api_key=False,
+            supports_rate=True,           # via `speed`
+            supports_pitch=False,
+            supports_voice_list=True,
+            supports_cloning=False,
+            output_sample_rate_hz=24000,
+            notes="Fully offline after a one-time ~340 MB model download. Rate "
+                  f"maps to speed; pitch unsupported. Models in '{self.model_dir}' "
+                  "(or set KOKORO_MODEL_DIR).",
+        )
+
+    def _engine(self):
+        if self._kokoro is None:
+            from kokoro_onnx import Kokoro
+            model, voices = self._paths()
+            self._kokoro = Kokoro(str(model), str(voices))
+        return self._kokoro
+
+    async def list_voices(self) -> list[VoiceInfo]:
+        if not self.is_available():
+            return []
+        names = await asyncio.to_thread(lambda: sorted(self._engine().get_voices()))
+        voices: list[VoiceInfo] = []
+        for name in names:
+            _lang, locale = _KOKORO_LANG.get(name[:1], ("en-us", ""))
+            voices.append(VoiceInfo(
+                id=name, label=name, gender="", locale=locale, provider=self.id,
+                raw={"ShortName": name, "Locale": locale, "Gender": ""},
+            ))
+        return voices
+
+    async def synthesize(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> None:
+        if not self._has_pkg():
+            raise RuntimeError("The `kokoro-onnx` (and `soundfile`) packages are not "
+                               "installed. `pip install kokoro-onnx soundfile`.")
+        model, voices = self._paths()
+        if not (model.exists() and voices.exists()):
+            raise RuntimeError(
+                f"Kokoro model files not found in '{self.model_dir}'. Download "
+                f"'{_KOKORO_MODEL}' and '{_KOKORO_VOICES}' from "
+                "https://github.com/thewh1teagle/kokoro-onnx/releases")
+        speed = _rate_str_to_speed_kokoro(rate)
+        lang = _KOKORO_LANG.get(voice_id[:1], ("en-us", ""))[0]
+
+        def _run() -> None:
+            import soundfile as sf
+
+            samples, sample_rate = self._engine().create(
+                text, voice=voice_id, speed=speed, lang=lang)
+            wav_tmp = out_path.with_suffix(".kokoro.wav")
+            sf.write(str(wav_tmp), samples, sample_rate)
+            _transcode_wav_to_mp3(wav_tmp, out_path)
 
         await asyncio.to_thread(_run)
 
@@ -437,6 +639,8 @@ class PiperProvider(TTSProvider):
 _REGISTRY: dict[str, type[TTSProvider]] = {
     EdgeTTSProvider.id: EdgeTTSProvider,
     PiperProvider.id: PiperProvider,
+    KokoroProvider.id: KokoroProvider,
+    AppleSayProvider.id: AppleSayProvider,
     OpenAIProvider.id: OpenAIProvider,
 }
 _INSTANCES: dict[str, TTSProvider] = {}

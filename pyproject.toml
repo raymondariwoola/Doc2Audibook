@@ -16,7 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["gradio>=5.0"]
-piper = ["piper-tts>=1.6.0"]      # free, fully-offline local provider
+# Free, fully-offline local providers (Piper + Kokoro):
+local = ["piper-tts>=1.6.0", "kokoro-onnx>=0.4.0", "soundfile>=0.12"]
 openai = ["openai>=1.0"]          # paid provider (experimental)
 
 [project.scripts]

@@ -1,11 +1,6 @@
-# Extra dependencies for the Gradio prototype UI (app.py).
+# Extra dependency for the Gradio prototype UI (app.py).
 #   pip install -r requirements.txt -r requirements-ui.txt
 #
-# The core CLI (narrate.py) with the default edge-tts provider does NOT need these.
+# The core CLI (narrate.py) with the default edge-tts provider does NOT need this.
 
 gradio>=5.0
-
-# Optional: the free, fully-offline Piper provider. After installing, download a
-# voice model once (then it needs no network):
-#   python -m piper.download_voices en_US-lessac-medium --download-dir piper_voices
-piper-tts>=1.6.0
