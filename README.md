@@ -173,6 +173,28 @@ on success unless you pass `--keep-chunks`.
 
 ---
 
+## TTS providers
+
+Speech engines sit behind a small `TTSProvider` interface in
+[`providers.py`](providers.py), so the CLI and UI stay the same regardless of
+engine. Pick one with `--provider`:
+
+| Provider | Cost | Notes |
+|---|---|---|
+| `edge` *(default)* | Free | Microsoft edge-tts neural voices, no key. |
+| `openai` | Paid | OpenAI TTS. **Experimental** — set `OPENAI_API_KEY`; rate maps to `speed`, pitch unsupported. Not yet verified end-to-end. |
+
+```bash
+narrate --provider edge --list-voices en-US        # free voices
+export OPENAI_API_KEY=sk-...                        # to try the paid provider
+narrate mydoc.docx --provider openai --voice nova
+```
+
+Adding a provider (Piper/Kokoro/ElevenLabs/Azure) means subclassing
+`TTSProvider` and registering it — see [`ROADMAP.md`](ROADMAP.md) Phase 2.
+
+---
+
 ## SSL / corporate-proxy networks
 
 Some corporate networks, proxies, and sandboxes intercept HTTPS with a

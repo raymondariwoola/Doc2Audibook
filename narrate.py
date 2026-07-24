@@ -15,7 +15,6 @@ import asyncio
 import json
 import re
 import shutil
-import ssl
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -366,88 +365,28 @@ def chunk_paragraphs(paragraphs: Iterable[str], limit: int = MAX_CHUNK_CHARS) ->
 
 
 # ----------------------------------------------------------------------------
-# SSL fallback — some corporate/proxy environments intercept HTTPS with a
-# self-signed cert trusted by the OS but absent from certifi's bundle. edge-tts
-# hardcodes certifi, so we fall back to the system trust store on cert errors.
+# TTS generation — delegated to the provider layer (providers.py). edge-tts is
+# the default provider; the functions below keep their historical signatures so
+# the CLI and the Gradio prototype are unaffected by the abstraction.
 # ----------------------------------------------------------------------------
 
-
-def _is_ssl_cert_error(exc: BaseException) -> bool:
-    seen = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ssl.SSLCertVerificationError):
-            return True
-        msg = str(current).lower()
-        if "self-signed certificate" in msg or "certificate verify failed" in msg:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-def _apply_ssl_fallback() -> bool:
-    """Swap edge-tts's certifi-backed SSL context for one built from the
-    system trust store. Returns True if any context was patched."""
-    system_ctx = ssl.create_default_context()
-    patched = False
-    for module_name in ("edge_tts.communicate", "edge_tts.voices"):
-        try:
-            module = sys.modules.get(module_name) or __import__(module_name, fromlist=["*"])
-        except Exception:
-            continue
-        if hasattr(module, "_SSL_CTX"):
-            module._SSL_CTX = system_ctx
-            patched = True
-    return patched
-
-
-# ----------------------------------------------------------------------------
-# TTS generation
-# ----------------------------------------------------------------------------
+import providers  # noqa: E402
+from providers import (  # noqa: E402  (re-exported for backward compatibility)
+    is_ssl_cert_error as _is_ssl_cert_error,
+    apply_ssl_fallback as _apply_ssl_fallback,
+)
 
 DEFAULT_PITCH = "+0Hz"          # natural pitch; edge-tts accepts e.g. "+5Hz"
 
-# Log the SSL fallback only once per process, no matter how many chunks trip it.
-_ssl_fallback_logged = False
-
-
-async def _synthesize_one(
-    text: str, voice: str, rate: str, pitch: str, out_path: Path
-) -> None:
-    import edge_tts
-
-    communicate = edge_tts.Communicate(text, voice=voice, rate=rate, pitch=pitch)
-    tmp = out_path.with_suffix(out_path.suffix + ".part")
-    await communicate.save(str(tmp))
-    if tmp.stat().st_size == 0:
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError("edge-tts produced an empty audio file")
-    tmp.replace(out_path)
-
 
 async def synthesize_to_file(
-    text: str, voice: str, rate: str, pitch: str, out_path: Path
+    text: str, voice: str, rate: str, pitch: str, out_path: Path,
+    provider: "providers.TTSProvider | None" = None,
 ) -> None:
-    """Synthesize one utterance, transparently falling back to the system trust
-    store if certifi's bundle rejects a corporate-proxy self-signed cert."""
-    global _ssl_fallback_logged
-    try:
-        await _synthesize_one(text, voice, rate, pitch, out_path)
-    except Exception as exc:  # noqa: BLE001
-        if _is_ssl_cert_error(exc):
-            if not _ssl_fallback_logged:
-                print(
-                    "  ! SSL certificate verification failed against certifi's bundle.\n"
-                    "  ! Falling back to the system trust store "
-                    "(edge_tts._SSL_CTX -> ssl.create_default_context()).",
-                    file=sys.stderr,
-                )
-                _ssl_fallback_logged = True
-            if _apply_ssl_fallback():
-                await _synthesize_one(text, voice, rate, pitch, out_path)  # retry once
-                return
-        raise
+    """Synthesize one utterance to `out_path` via the given provider (default:
+    edge-tts). Kept for backward compatibility and used for voice previews."""
+    prov = provider or providers.default_provider()
+    await prov.synthesize(text, voice, out_path, rate=rate, pitch=pitch)
 
 
 async def generate_chunks(
@@ -457,10 +396,12 @@ async def generate_chunks(
     pitch: str,
     work_dir: Path,
     on_chunk=None,
+    provider: "providers.TTSProvider | None" = None,
 ) -> list[Path]:
     """Synthesize each chunk to its own MP3. Resumable: non-empty existing
     chunk files are skipped. `on_chunk(i, total, chars, status)` is called per
     chunk with status in {"skipped", "done"} so any UI can render progress."""
+    prov = provider or providers.default_provider()
     work_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     total = len(chunks)
@@ -474,24 +415,23 @@ async def generate_chunks(
                 on_chunk(i, total, len(text), "skipped")
             continue
 
-        await synthesize_to_file(text, voice, rate, pitch, out_path)
+        await prov.synthesize(text, voice, out_path, rate=rate, pitch=pitch)
         if on_chunk:
             on_chunk(i, total, len(text), "done")
 
     return paths
 
 
-async def fetch_voices() -> list[dict]:
-    """Return the edge-tts voice catalog (with SSL fallback). Reusable by any UI."""
-    import edge_tts
-
-    try:
-        return await edge_tts.list_voices()
-    except Exception as exc:  # noqa: BLE001
-        if _is_ssl_cert_error(exc) and _apply_ssl_fallback():
-            print("  ! SSL fallback engaged for voice listing.", file=sys.stderr)
-            return await edge_tts.list_voices()
-        raise
+async def fetch_voices(provider_id: str = providers.DEFAULT_PROVIDER_ID) -> list[dict]:
+    """Return a provider's voice catalog as plain dicts (ShortName/Gender/Locale),
+    the shape the CLI and prototype already consume. Reusable by any UI."""
+    voices = await providers.get_provider(provider_id).list_voices()
+    result: list[dict] = []
+    for v in voices:
+        result.append(v.raw or {
+            "ShortName": v.id, "Gender": v.gender, "Locale": v.locale,
+        })
+    return result
 
 
 # ----------------------------------------------------------------------------
@@ -499,8 +439,9 @@ async def fetch_voices() -> list[dict]:
 # ----------------------------------------------------------------------------
 
 
-async def list_voices(filter_substr: str | None) -> None:
-    voices = await fetch_voices()
+async def list_voices(filter_substr: str | None,
+                      provider_id: str = providers.DEFAULT_PROVIDER_ID) -> None:
+    voices = await fetch_voices(provider_id)
     voices.sort(key=lambda v: (v.get("Locale", ""), v.get("ShortName", "")))
     needle = (filter_substr or "").lower()
     shown = 0
@@ -663,6 +604,7 @@ def build_audiobook(
     rate: str = DEFAULT_RATE,
     pitch: str = DEFAULT_PITCH,
     fmt: str = "mp3",
+    provider: str = providers.DEFAULT_PROVIDER_ID,
     user_rules: Optional[list[tuple[str, str]]] = None,
     work_dir: Optional[Path] = None,
     keep_chunks: bool = False,
@@ -672,6 +614,7 @@ def build_audiobook(
 ) -> AudiobookResult:
     """Run the full document -> narrated audio pipeline.
 
+    `provider` selects the TTS engine (default "edge"; see providers.py).
     `on_stage(stage, info)` fires at "extracted", "assembling", and "done".
     `on_chunk(i, total, chars, status)` fires per chunk ("skipped"/"done").
     Raises ValueError if the document yields no readable text.
@@ -681,6 +624,7 @@ def build_audiobook(
     if fmt not in SUPPORTED_FORMATS:
         raise ValueError(f"Unsupported format '{fmt}'. Choose one of: "
                          f"{', '.join(SUPPORTED_FORMATS)}")
+    prov = providers.get_provider(provider)
     if work_dir is None:
         work_dir = output.with_name(output.stem + "_chunks")
     work_dir = Path(work_dir)
@@ -699,7 +643,8 @@ def build_audiobook(
         })
 
     chunk_paths = asyncio.run(
-        generate_chunks(chunks, voice, rate, pitch, work_dir, on_chunk=on_chunk)
+        generate_chunks(chunks, voice, rate, pitch, work_dir,
+                        on_chunk=on_chunk, provider=prov)
     )
 
     if on_stage:
@@ -743,7 +688,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("input", nargs="?", help="input document (.docx, .pdf, .txt, .md)")
     p.add_argument("-o", "--output", help="output MP3 path (default: <input>.mp3)")
-    p.add_argument("--voice", default=DEFAULT_VOICE, help=f"edge-tts voice (default: {DEFAULT_VOICE})")
+    p.add_argument("--provider", choices=providers.all_provider_ids(),
+                   default=providers.DEFAULT_PROVIDER_ID,
+                   help=f"TTS provider (default: {providers.DEFAULT_PROVIDER_ID}). "
+                        "'openai' needs OPENAI_API_KEY and is experimental.")
+    p.add_argument("--voice", default=DEFAULT_VOICE, help=f"voice name (default: {DEFAULT_VOICE})")
     p.add_argument("--rate", default=DEFAULT_RATE,
                    help="speech rate, e.g. -10%% or +5%% (default: "
                         + DEFAULT_RATE.replace("%", "%%") + ")")
@@ -769,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --list-voices short-circuits everything else.
     if args.list_voices is not None:
-        asyncio.run(list_voices(args.list_voices or None))
+        asyncio.run(list_voices(args.list_voices or None, args.provider))
         return 0
 
     if not args.input:
@@ -800,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"Reading    : {input_path}  ({input_path.suffix.lower()})")
+    print(f"Provider   : {args.provider}")
     print(f"Voice      : {args.voice}   Rate: {args.rate}   Pitch: {args.pitch}   Format: {fmt}")
 
     def on_stage(stage: str, info: dict) -> None:
@@ -820,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         result = build_audiobook(
             input_path, output,
             voice=args.voice, rate=args.rate, pitch=args.pitch, fmt=fmt,
+            provider=args.provider,
             user_rules=user_rules, work_dir=work_dir,
             keep_chunks=args.keep_chunks, max_chars=args.max_chars,
             on_stage=on_stage, on_chunk=on_chunk,

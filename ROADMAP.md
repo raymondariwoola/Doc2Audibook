@@ -17,8 +17,8 @@ desktop app for macOS and Windows** — all running locally, not a public servic
 | Phase | State | Deliverable |
 |------:|:-----:|-------------|
 | **0. CLI engine** | ✅ Done | `narrate.py` — extract → clean → chunk → edge-tts → ffmpeg |
-| **1. Gradio prototype** | 🔨 In progress | `app.py` — browser UI to *feel* the product |
-| **2. Provider layer** | ⬜ Planned | Pluggable free + paid TTS engines |
+| **1. Gradio prototype** | ✅ Done | `app.py` — browser UI to *feel* the product |
+| **2. Provider layer** | 🔨 In progress | Pluggable free + paid TTS engines (`providers.py`) |
 | **3. Local web app** | ⬜ Planned | FastAPI + React, runs on `localhost` |
 | **4. Native desktop** | ⬜ Planned | Packaged `.app` (macOS) + `.exe` (Windows) |
 | **5. Audiobook polish** | ⬜ Planned | M4B chapters, resume UX, library |
@@ -101,18 +101,27 @@ Goal: make the vision **tangible** fast, on top of the existing engine.
 
 ---
 
-## Phase 2 — Provider layer ⬜
+## Phase 2 — Provider layer 🔨
 
-Goal: the "free → paid voices with previews" part of the vision.
+Goal: the "free → paid voices with previews" part of the vision. Lives in
+[`providers.py`](providers.py); the engine and prototype were **not** disrupted —
+edge-tts is the default provider and all existing signatures were preserved.
 
-- [ ] Define `TTSProvider` interface: `list_voices()`, `preview(voice, opts)`,
-      `synthesize(text, voice, opts) -> audio`, `capabilities()`.
-- [ ] `EdgeTTSProvider` (wrap current code as the reference implementation).
+- [x] Define `TTSProvider` interface: `list_voices()`, `synthesize()`,
+      `capabilities()`, `is_available()` (previews reuse `synthesize`).
+- [x] `EdgeTTSProvider` — reference implementation, owns the SSL fallback.
+- [x] `OpenAIProvider` — **experimental**, key-gated (`OPENAI_API_KEY`); rate maps
+      to `speed`, pitch unsupported (advertised via `capabilities()`). Coded to the
+      documented API but **not yet verified end-to-end** (no key here).
+- [x] Provider registry + `--provider` CLI flag; `available_providers()` reports
+      which are usable right now.
 - [ ] **Free/local:** `PiperProvider`, `KokoroProvider`, `AppleSayProvider`.
-- [ ] **Paid (API key):** `OpenAIProvider`, `ElevenLabsProvider`, `AzureProvider`.
-- [ ] Secure key storage (OS keychain / `.env`, never committed).
+- [ ] **Paid:** `ElevenLabsProvider`, `AzureProvider`; verify `OpenAIProvider` with a real key.
+- [ ] Secure key storage (OS keychain; currently env var / `.env`, never committed).
 - [ ] Per-voice **sample cache** so previews are instant after first play.
-- [ ] Capability-driven UI (hide pitch where unsupported, show cloning where it is).
+- [ ] Capability-driven UI: a provider picker in the prototype that hides pitch
+      where unsupported and prompts for a key where needed (capabilities already
+      expose this; UI wiring is the remaining step).
 
 ### Voice provider reference
 
@@ -183,3 +192,10 @@ Record notable choices here so future-us remembers the *why*.
 - **2026-07-24** — Confirmed edge-tts supports `pitch`, so pitch/pace controls are
   an engine tweak, not a new provider. Documented its 24 kHz output ceiling as the
   reason higher fidelity waits for Phase 2 providers.
+- **2026-07-24** — Started Phase 2. Introduced `providers.py` **additively**: edge
+  stays the default and every existing `narrate` signature is unchanged, so the CLI
+  and Gradio prototype behave identically (verified). `OpenAIProvider` added as a
+  key-gated, capability-aware reference for paid engines but left **unverified**
+  pending a real key — deliberately not wired into the prototype UI yet to avoid
+  shipping an untested path into the happy flow. Capabilities (`supports_pitch`
+  etc.) exist so a future provider picker can adapt controls per engine.
