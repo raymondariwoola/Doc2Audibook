@@ -100,6 +100,22 @@ forcing each theme with the `?__theme=light` / `?__theme=dark` query param (also
 `networkidle`. Always capture **both** themes — this is how the earlier light/dark
 clash was caught.
 
+## Building a distributable wheel
+
+The wheel bundles the React client so `narrate-web` serves the UI from an install
+(risk R-012). **Build the frontend first** — a `setup.py` `build_py` hook copies
+`web/dist` into `web_api/frontend` (shipped as package data); without it the wheel
+is API-only and the hook prints a warning.
+
+```bash
+npm --prefix web ci && npm --prefix web run build   # produces web/dist
+.venv/bin/python -m pip wheel . --no-deps -w dist   # or: python -m build
+```
+
+`web_api.main._resolve_frontend_dist` prefers the bundled `web_api/frontend` and
+falls back to source `web/dist` for dev, so nothing changes when running from the
+tree. `web_api/frontend/`, `build/`, and `dist/` are gitignored build artifacts.
+
 ## Conventions & guardrails
 
 - **Environment:** always use `.venv` (created by bootstrap). Run tools as

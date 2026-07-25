@@ -350,3 +350,14 @@ Record notable choices here so future-us remembers the *why*.
   clip's duration, so the transcript still tracks. Engine untouched; existing
   `synthesize` contract preserved. Verified live (real edge marks highlight the
   spoken word); +2 backend tests, full suite green (38) and `vite build` clean.
+- **2026-07-25** — Closed R-012: the wheel now bundles the React client. A
+  `setup.py` `build_py` hook copies `web/dist` into `web_api/frontend` at build
+  time (shipped as package data via `pyproject.toml`), and `web_api.main` prefers
+  that bundled copy over the source-tree `web/dist`, so `narrate-web` from an
+  installed wheel serves the UI instead of an API-only page. `web_api/frontend`
+  is gitignored (a build artifact). Verified end-to-end: a built wheel contains
+  `web_api/frontend/index.html`; installed in isolation it serves the SPA at `/`,
+  `/api/health` works, and unknown `/api` paths still 404. +4 packaging tests,
+  full suite green (42). Build order: `npm --prefix web ci && npm --prefix web run
+  build`, then `pip wheel .` (or `python -m build`). This unblocks Phase 4
+  desktop packaging.
