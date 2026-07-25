@@ -141,6 +141,81 @@ chunk size, and replacement rules. This is **Phase 1** of the
 [roadmap](ROADMAP.md); the long-term UI is a FastAPI + React app and native
 desktop builds.
 
+### Running & verifying the prototype (dev ops)
+
+> Style/theme changes are passed to Gradio's `launch()`, so a **running instance
+> will not hot-reload them** — you must restart the process to see UI changes.
+> The commands below assume Git Bash on Windows (the repo's default shell); on
+> macOS/Linux swap `.venv/Scripts/python` → `.venv/bin/python` and use
+> `lsof -i :7860` in place of `netstat`.
+
+**When to use:** you changed `app.py` styling/layout and want to see it, or you
+have stray/duplicate instances hogging ports and need exactly one clean server.
+
+**1. See which instances are running (and on which port).** Gradio uses `7860` by
+default and falls back to `7861`, `7862`, … when a port is taken — so duplicates
+hide on higher ports:
+
+```bash
+echo "=== Gradio listeners ==="; netstat -ano | grep -E ":78[0-9][0-9] " | grep LISTEN
+```
+
+**2. Identify a process before killing it** (confirm it's our app, not something
+else on that port). Replace the IDs with the PIDs from step 1:
+
+```bash
+powershell -Command "Get-CimInstance Win32_Process -Filter 'ProcessId=1234 or ProcessId=5678' | Select-Object ProcessId, @{n='Cmd';e={\$_.CommandLine}} | Format-List"
+```
+
+**3. Kill stray instances** (use the PIDs from step 1). Do this before a restart
+so you end up with a single server:
+
+```bash
+powershell -Command "Stop-Process -Id 1234,5678 -Force -ErrorAction SilentlyContinue"
+sleep 1
+netstat -ano | grep -E ":78[0-9][0-9] " | grep LISTEN || echo "all clear"
+```
+
+**4. Launch one clean instance and wait for it to come up:**
+
+```bash
+.venv/Scripts/python app.py > /tmp/d2a.log 2>&1 &
+for i in $(seq 1 12); do
+  netstat -ano | grep -qE ":7860 .*LISTEN" && { echo "up on 7860"; break; }
+  sleep 1
+done
+grep -iE "running on|url|error|traceback" /tmp/d2a.log | head    # startup errors, if any
+```
+
+**5. Health-check it:**
+
+```bash
+curl -s -o /dev/null -w "http://127.0.0.1:7860 -> HTTP %{http_code}\n" http://127.0.0.1:7860/
+```
+
+**Screenshot-verify the UI in both themes (headless).** Playwright + Chromium are
+installed in the `.venv` as a **dev-only** aid (not a runtime dependency). Force
+each theme with the `?__theme=` query param and always capture **both** — the UI
+is theme-aware and a light-only change can silently break dark mode (that was the
+original bug). Save the snippet as e.g. `shot.py` and run it while the app is up:
+
+```python
+from playwright.sync_api import sync_playwright  # .venv/Scripts/python shot.py
+URL = "http://127.0.0.1:7860"
+with sync_playwright() as p:
+    b = p.chromium.launch()
+    pg = b.new_page(viewport={"width": 1440, "height": 900})
+    for theme in ("light", "dark"):
+        pg.emulate_media(color_scheme=theme)
+        pg.goto(f"{URL}/?__theme={theme}", wait_until="networkidle")
+        pg.wait_for_timeout(2500)                       # let Gradio settle
+        pg.screenshot(path=f"{theme}.png", full_page=True)
+    b.close()
+```
+
+First-time setup of the screenshot tooling (already done on this machine):
+`.venv/Scripts/python -m pip install playwright && .venv/Scripts/python -m playwright install chromium`.
+
 ---
 
 ## Usage (CLI)

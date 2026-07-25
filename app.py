@@ -318,6 +318,13 @@ APP_CSS = """
     gap: 12px !important;
 }
 
+/* Keep the label-less Preview button flush with the Voice dropdown's input box. */
+.voice-row .preview-button {
+    align-self: end !important;
+    min-height: 46px !important;
+    margin-bottom: 0 !important;
+}
+
 .compact-audio {
     margin-top: 12px;
 }
