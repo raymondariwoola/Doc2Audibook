@@ -204,7 +204,10 @@ The current Windows x64 MSI/NSIS builds are **unsigned internal development
 artifacts**. The explicit FFmpeg override records a GPL/unknown build for local
 testing; it does not grant redistribution approval. Build instructions, exact
 smoke commands, current evidence, pending macOS work, and release/licensing
-gates live in [`docs/desktop/`](docs/desktop/).
+gates live in [`docs/desktop/`](docs/desktop/). The owner-specific release
+queue—including licenses, signing identities, secret-handling rules, and what
+each item blocks—is in
+[`OWNER_ACTIONS.md`](docs/desktop/OWNER_ACTIONS.md).
 
 ## Gradio prototype (retained)
 

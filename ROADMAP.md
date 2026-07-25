@@ -425,3 +425,9 @@ Record notable choices here so future-us remembers the *why*.
   strict HttpOnly API session. Rebuilt both Windows installers, passed six Rust
   tests and six React tests, re-ran frozen Edge MP3/M4A/WAV acceptance, and
   confirmed a corrected native launch added no token-shaped history entry.
+- **2026-07-25** — Added a plain-language Phase 4 owner-action checklist that
+  separates engineering-owned license inventory/notices from the publisher
+  decisions, asset provenance, legal approvals, signing enrollments, privacy
+  inputs, and macOS access only the owner can supply. It records official source
+  links, what every action blocks, and which credentials must never enter Git or
+  chat; see [`docs/desktop/OWNER_ACTIONS.md`](docs/desktop/OWNER_ACTIONS.md).

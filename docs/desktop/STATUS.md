@@ -146,6 +146,10 @@ self-contained distributable release:
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
+The decisions, accounts, and approvals that only the project owner can supply
+are separated into [OWNER_ACTIONS.md](OWNER_ACTIONS.md). Private keys and
+credentials must never be attached to the repository or shared as evidence.
+
 ## Latest validation evidence
 
 Build identity:

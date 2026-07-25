@@ -8,6 +8,10 @@ An item is complete only with evidence. A successful compiler exit does not
 prove resource licensing, installer behavior, real-provider narration, process
 cleanup, signing, or notarization.
 
+For the decisions, accounts, and approvals that only the project owner can
+supply, use [OWNER_ACTIONS.md](OWNER_ACTIONS.md). It also explains what the
+engineering work can finish without owner credentials.
+
 ## Artifact identity
 
 - [x] Record the source commit.
