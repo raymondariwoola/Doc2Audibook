@@ -65,6 +65,7 @@ class Capabilities:
     supports_pitch: bool = True
     supports_voice_list: bool = True
     supports_cloning: bool = False
+    supports_word_marks: bool = False   # per-word timings for karaoke highlighting
     output_sample_rate_hz: Optional[int] = None
     notes: str = ""
 
@@ -139,6 +140,20 @@ class TTSProvider(ABC):
         """Render `text` to `out_path` (MP3). `rate`/`pitch` use edge-tts string
         conventions ('-4%', '+5Hz'); providers map them as best they can."""
 
+    async def synthesize_with_marks(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> Optional[list[dict]]:
+        """Render `text` and, when the engine exposes them, return per-word timing
+        marks as ``[{"text", "start", "end"}]`` (seconds into the rendered audio).
+
+        Default: synthesize normally and return ``None`` (no marks). Providers that
+        advertise ``supports_word_marks`` override this. UIs use the marks to
+        highlight words in sync with playback; ``None`` means fall back to an
+        estimate or no highlighting.
+        """
+        await self.synthesize(text, voice_id, out_path, rate=rate, pitch=pitch)
+        return None
+
 
 # ----------------------------------------------------------------------------
 # EdgeTTSProvider — free, default, reference implementation
@@ -157,6 +172,7 @@ class EdgeTTSProvider(TTSProvider):
             supports_pitch=True,
             supports_voice_list=True,
             supports_cloning=False,
+            supports_word_marks=True,
             output_sample_rate_hz=24000,
             notes="Free, no key. Output is 24 kHz mono ~48 kbps MP3.",
         )
@@ -200,9 +216,56 @@ class EdgeTTSProvider(TTSProvider):
     async def synthesize(
         self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
     ) -> None:
+        await self._with_ssl_fallback(
+            self._synthesize_once, text, voice_id, rate, pitch, out_path
+        )
+
+    async def _stream_once_with_marks(
+        self, text: str, voice_id: str, rate: str, pitch: str, out_path: Path
+    ) -> list[dict]:
+        """Stream audio to `out_path` while collecting edge-tts WordBoundary marks.
+
+        Offsets/durations arrive in 100-nanosecond units; convert to seconds.
+        """
+        import edge_tts
+
+        # edge-tts 7.x defaults to sentence-level boundaries; request word-level
+        # so the UI can highlight each word as it is spoken.
+        communicate = edge_tts.Communicate(
+            text, voice=voice_id, rate=rate, pitch=pitch, boundary="WordBoundary"
+        )
+        marks: list[dict] = []
+        tmp = out_path.with_suffix(out_path.suffix + ".part")
+        with open(tmp, "wb") as handle:
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    handle.write(chunk["data"])
+                elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
+                    start = chunk["offset"] / 1e7
+                    marks.append({
+                        "text": chunk["text"],
+                        "start": round(start, 3),
+                        "end": round(start + chunk["duration"] / 1e7, 3),
+                    })
+        if tmp.stat().st_size == 0:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("edge-tts produced an empty audio file")
+        tmp.replace(out_path)
+        return marks
+
+    async def synthesize_with_marks(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> Optional[list[dict]]:
+        return await self._with_ssl_fallback(
+            self._stream_once_with_marks, text, voice_id, rate, pitch, out_path
+        )
+
+    async def _with_ssl_fallback(self, fn, text, voice_id, rate, pitch, out_path):
+        """Run an edge-tts coroutine, retrying once via the system trust store on a
+        certificate-verification error (shared by synthesize and the marks path)."""
         global _ssl_fallback_logged
         try:
-            await self._synthesize_once(text, voice_id, rate, pitch, out_path)
+            return await fn(text, voice_id, rate, pitch, out_path)
         except Exception as exc:  # noqa: BLE001
             if is_ssl_cert_error(exc):
                 if not _ssl_fallback_logged:
@@ -214,8 +277,7 @@ class EdgeTTSProvider(TTSProvider):
                     )
                     _ssl_fallback_logged = True
                 if apply_ssl_fallback():
-                    await self._synthesize_once(text, voice_id, rate, pitch, out_path)
-                    return
+                    return await fn(text, voice_id, rate, pitch, out_path)
             raise
 
 

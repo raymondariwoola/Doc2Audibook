@@ -26,9 +26,10 @@ class DummyProvider(providers.TTSProvider):
     id = "dummy"
     label = "Test narrator"
 
-    def __init__(self, *, available=True, supports_pitch=True):
+    def __init__(self, *, available=True, supports_pitch=True, supports_marks=False):
         self.available = available
         self.supports_pitch = supports_pitch
+        self.supports_marks = supports_marks
 
     def is_available(self):
         return self.available
@@ -40,8 +41,16 @@ class DummyProvider(providers.TTSProvider):
         return providers.Capabilities(
             provider_id=self.id,
             supports_pitch=self.supports_pitch,
+            supports_word_marks=self.supports_marks,
             notes="Safe test provider",
         )
+
+    async def synthesize_with_marks(self, text, voice_id, out_path, *, rate, pitch):
+        out_path.write_bytes(b"marked-audio")
+        return [
+            {"text": "Hello", "start": 0.0, "end": 0.4},
+            {"text": "world", "start": 0.4, "end": 0.9},
+        ]
 
     async def list_voices(self):
         return [
@@ -147,10 +156,47 @@ class WebApiTests(unittest.TestCase):
             second = self.client.post("/api/preview", json=payload)
 
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(first.headers["content-type"], "audio/mpeg")
-        self.assertEqual(first.content, b"preview-audio")
-        self.assertEqual(second.content, b"preview-audio")
+        body = first.json()
+        self.assertTrue(body["audio_url"].startswith("/api/preview/file/"))
+        self.assertTrue(body["audio_url"].endswith(".mp3"))
+        # A provider without word timings reports no marks.
+        self.assertIsNone(body["marks"])
+        self.assertEqual(second.json()["audio_url"], body["audio_url"])
         self.assertEqual(calls, 1)
+
+        audio = self.client.get(body["audio_url"])
+        self.assertEqual(audio.status_code, 200)
+        self.assertEqual(audio.headers["content-type"], "audio/mpeg")
+        self.assertEqual(audio.content, b"preview-audio")
+
+    def test_preview_returns_word_marks_when_the_provider_supports_them(self):
+        self.provider.supports_marks = True
+        response = self.client.post(
+            "/api/preview",
+            json={"provider": "dummy", "voice": "en-test-one", "text": "Hello world"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual([mark["text"] for mark in body["marks"]], ["Hello", "world"])
+        self.assertEqual(body["text"], "Hello world")
+
+        audio = self.client.get(body["audio_url"])
+        self.assertEqual(audio.status_code, 200)
+        self.assertEqual(audio.content, b"marked-audio")
+
+        # Marks persist beside the cached audio, so a cache hit still returns them.
+        cached = self.client.post(
+            "/api/preview",
+            json={"provider": "dummy", "voice": "en-test-one", "text": "Hello world"},
+        )
+        self.assertEqual([mark["text"] for mark in cached.json()["marks"]], ["Hello", "world"])
+
+    def test_preview_file_route_rejects_path_traversal(self):
+        for name in ["../secret.mp3", "not-a-digest.mp3", "%2e%2e/x.mp3"]:
+            self.assertEqual(
+                self.client.get(f"/api/preview/file/{name}").status_code,
+                404,
+            )
 
     def test_preview_hides_local_exception_details_but_logs_them(self):
         secret_path = r"C:\Users\private\models\voice.onnx"

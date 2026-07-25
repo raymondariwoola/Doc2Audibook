@@ -338,3 +338,15 @@ Record notable choices here so future-us remembers the *why*.
   reloaded from disk). Note: a real end-to-end render surfaced R-015 locally
   (ffmpeg absent from this shell's PATH); the job failed gracefully with chunks
   retained, exactly as designed — an environment gap, not a regression.
+- **2026-07-25** — Voice preview now shows the sample sentence with **word-by-word
+  highlighting** synced to playback (React web app). Added a `supports_word_marks`
+  capability and an additive `TTSProvider.synthesize_with_marks(...)`; the edge
+  provider captures real per-word timings via edge-tts `boundary="WordBoundary"`
+  in one streaming pass (no double synthesis, SSL fallback shared with
+  `synthesize`). `POST /api/preview` now returns `{audio_url, text, marks}` and
+  caches marks beside the audio; a new `GET /api/preview/file/{digest}.mp3` serves
+  the cached clip (digest-validated, traversal-safe). Providers without timings
+  (Piper/Kokoro/Apple/OpenAI) fall back to a length-weighted estimate over the
+  clip's duration, so the transcript still tracks. Engine untouched; existing
+  `synthesize` contract preserved. Verified live (real edge marks highlight the
+  spoken word); +2 backend tests, full suite green (38) and `vite build` clean.

@@ -736,8 +736,8 @@ def create_app(
         return {"provider": provider_id, "voices": result}
 
     @api.post("/preview", include_in_schema=False)
-    @api.post("/api/preview", tags=["voices"], response_class=FileResponse)
-    async def preview(payload: PreviewRequest) -> FileResponse:
+    @api.post("/api/preview", tags=["voices"])
+    async def preview(payload: PreviewRequest) -> dict[str, Any]:
         provider = _require_available(payload.provider)
         voice = payload.voice.strip()
         text = payload.text.strip()
@@ -760,23 +760,48 @@ def create_app(
             json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
         destination = api.state.preview_root / f"{digest}.mp3"
+        marks_path = api.state.preview_root / f"{digest}.marks.json"
+        marks: list[dict[str, Any]] | None = None
         lock = api.state.preview_locks.setdefault(digest, asyncio.Lock())
         async with lock:
-            if not destination.is_file() or destination.stat().st_size == 0:
+            if destination.is_file() and destination.stat().st_size:
+                # Cache hit — reuse audio and any timings captured on first render.
+                if marks_path.is_file():
+                    try:
+                        marks = json.loads(marks_path.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001 - stale/corrupt cache is non-fatal
+                        marks = None
+            else:
                 temporary = destination.with_name(f"{digest}.{uuid.uuid4().hex}.part.mp3")
                 try:
                     async with api.state.generation_lock:
-                        await narrate.synthesize_to_file(
-                            text,
-                            voice,
-                            _rate(payload.rate),
-                            _pitch(effective_pitch),
-                            temporary,
-                            provider=provider,
-                        )
+                        if caps.supports_word_marks:
+                            # Providers with real word timings (edge-tts) render and
+                            # return marks in one pass — no double synthesis.
+                            marks = await provider.synthesize_with_marks(
+                                text,
+                                voice,
+                                temporary,
+                                rate=_rate(payload.rate),
+                                pitch=_pitch(effective_pitch),
+                            )
+                        else:
+                            # Everyone else keeps the engine path (handles transcode).
+                            await narrate.synthesize_to_file(
+                                text,
+                                voice,
+                                _rate(payload.rate),
+                                _pitch(effective_pitch),
+                                temporary,
+                                provider=provider,
+                            )
                     if not temporary.is_file() or temporary.stat().st_size == 0:
                         raise RuntimeError("The provider returned an empty preview.")
                     temporary.replace(destination)
+                    if marks:
+                        marks_path.write_text(
+                            json.dumps(marks, ensure_ascii=False), encoding="utf-8"
+                        )
                 except Exception as exc:  # noqa: BLE001
                     temporary.unlink(missing_ok=True)
                     logger.exception(
@@ -789,11 +814,22 @@ def create_app(
                             "and voice are available, then try again."
                         ),
                     ) from exc
-        return FileResponse(
-            destination,
-            media_type="audio/mpeg",
-            filename=f"{_safe_stem(voice)}-preview.mp3",
-        )
+        return {
+            "audio_url": f"/api/preview/file/{digest}.mp3",
+            "text": text,
+            "marks": marks,
+        }
+
+    @api.get("/api/preview/file/{name}", tags=["voices"], response_class=FileResponse)
+    async def preview_file(name: str) -> FileResponse:
+        # Serve only cached preview audio, addressed by its content digest, and
+        # never let a crafted name escape the preview directory.
+        if not re.fullmatch(r"[0-9a-f]{64}\.mp3", name):
+            raise HTTPException(status_code=404, detail="Preview not found.")
+        candidate = (api.state.preview_root / name).resolve()
+        if candidate.parent != api.state.preview_root or not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Preview not found.")
+        return FileResponse(candidate, media_type="audio/mpeg", filename=name)
 
     @api.post("/jobs", include_in_schema=False, status_code=202)
     @api.post("/api/jobs", tags=["jobs"], status_code=202)

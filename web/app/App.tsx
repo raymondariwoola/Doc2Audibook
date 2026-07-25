@@ -76,6 +76,12 @@ type Rule = {
   to: string;
 };
 
+type WordMark = {
+  text: string;
+  start: number;
+  end: number;
+};
+
 type JobSettings = {
   provider?: string;
   voice?: string;
@@ -117,6 +123,8 @@ const rawApiBase =
 const API_BASE_URL = String(rawApiBase).replace(/\/$/, "");
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = [".docx", ".pdf", ".txt", ".md"];
+const PREVIEW_TEXT =
+  "Settle in and listen. This is how your document will sound as a beautifully narrated audiobook.";
 
 const providerDescriptions: Record<string, string> = {
   edge: "Natural cloud voices with broad language coverage.",
@@ -206,6 +214,22 @@ function parseRules(value: string): Rule[] {
     .filter((rule): rule is Rule => rule !== null);
 }
 
+// When a provider gives no real word timings, approximate them by distributing
+// the known audio duration across words weighted by length. Good enough to guide
+// the eye; edge-tts (the default) supplies exact marks and skips this entirely.
+function estimateMarks(words: string[], duration: number): WordMark[] {
+  if (!words.length || !Number.isFinite(duration) || duration <= 0) return [];
+  const weights = words.map((word) => word.length + 1);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  let elapsed = 0;
+  return words.map((word, index) => {
+    const span = (weights[index] / total) * duration;
+    const mark = { text: word, start: elapsed, end: elapsed + span };
+    elapsed += span;
+    return mark;
+  });
+}
+
 function normalizeProgress(progress?: number): number {
   if (!Number.isFinite(progress)) return 0;
   const value = Number(progress);
@@ -227,8 +251,13 @@ export default function App() {
   const [pitch, setPitch] = useState(0);
   const [format, setFormat] = useState<OutputFormat>("mp3");
   const [rulesText, setRulesText] = useState("");
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [previewText, setPreviewText] = useState("");
+  const [previewMarks, setPreviewMarks] = useState<WordMark[] | null>(null);
+  const [estimatedMarks, setEstimatedMarks] = useState<WordMark[] | null>(null);
+  const [activeWord, setActiveWord] = useState(-1);
   const [job, setJob] = useState<Job | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -250,6 +279,18 @@ export default function App() {
     submitting || job?.status === "queued" || job?.status === "running";
   const progress = normalizeProgress(job?.progress);
   const rules = useMemo(() => parseRules(rulesText), [rulesText]);
+  const previewWords = useMemo(
+    () => (previewText ? previewText.trim().split(/\s+/) : []),
+    [previewText],
+  );
+  // Prefer real per-word timings when they line up with the displayed words;
+  // otherwise fall back to the length-weighted estimate built on metadata load.
+  const activeMarks = useMemo<WordMark[] | null>(() => {
+    if (previewMarks && previewMarks.length === previewWords.length) {
+      return previewMarks;
+    }
+    return estimatedMarks;
+  }, [previewMarks, estimatedMarks, previewWords.length]);
 
   const checkHealth = useCallback(async () => {
     setConnection("checking");
@@ -350,6 +391,9 @@ export default function App() {
     const controller = new AbortController();
     setVoicesLoading(true);
     setPreviewUrl("");
+    setPreviewMarks(null);
+    setEstimatedMarks(null);
+    setActiveWord(-1);
     void fetch(
       apiUrl(`/api/providers/${encodeURIComponent(selectedProvider)}/voices`),
       {
@@ -480,7 +524,7 @@ export default function App() {
       const response = await fetch(apiUrl("/api/preview"), {
         method: "POST",
         headers: {
-          Accept: "audio/mpeg",
+          Accept: "application/json",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -488,22 +532,27 @@ export default function App() {
           voice: selectedVoice,
           rate,
           pitch: supportsPitch ? pitch : 0,
-          text:
-            "Settle in and listen. This is how your document will sound as a beautifully narrated audiobook.",
+          text: PREVIEW_TEXT,
         }),
       });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as {
-          detail?: string;
-        } | null;
+      const payload = (await response.json().catch(() => null)) as {
+        audio_url?: string;
+        text?: string;
+        marks?: WordMark[] | null;
+        detail?: string;
+      } | null;
+      if (!response.ok || !payload?.audio_url) {
         throw new Error(
           payload?.detail || "Voice preview could not be created.",
         );
       }
-      const blob = await response.blob();
+      setPreviewText(payload.text || PREVIEW_TEXT);
+      setPreviewMarks(payload.marks ?? null);
+      setEstimatedMarks(null);
+      setActiveWord(-1);
       setPreviewUrl((current) => {
         if (current.startsWith("blob:")) URL.revokeObjectURL(current);
-        return URL.createObjectURL(blob);
+        return apiUrl(payload.audio_url as string);
       });
     } catch (caught) {
       setError(
@@ -830,6 +879,9 @@ export default function App() {
                       onChange={(event) => {
                         setSelectedVoice(event.target.value);
                         setPreviewUrl("");
+                        setPreviewMarks(null);
+                        setEstimatedMarks(null);
+                        setActiveWord(-1);
                       }}
                       disabled={voicesLoading || !voices.length || jobActive}
                     >
@@ -869,13 +921,54 @@ export default function App() {
                   </p>
                 )}
                 {previewUrl && (
-                  <audio
-                    className="preview-audio"
-                    src={previewUrl}
-                    controls
-                    autoPlay
-                    aria-label={`${activeVoice?.label || "Voice"} preview`}
-                  />
+                  <div className="preview-playback">
+                    <audio
+                      ref={previewAudioRef}
+                      className="preview-audio"
+                      src={previewUrl}
+                      controls
+                      autoPlay
+                      onLoadedMetadata={() => {
+                        const audio = previewAudioRef.current;
+                        if (!audio) return;
+                        if (
+                          !previewMarks ||
+                          previewMarks.length !== previewWords.length
+                        ) {
+                          setEstimatedMarks(
+                            estimateMarks(previewWords, audio.duration),
+                          );
+                        }
+                      }}
+                      onTimeUpdate={() => {
+                        const audio = previewAudioRef.current;
+                        if (!audio || !activeMarks || !activeMarks.length) return;
+                        const current = audio.currentTime;
+                        let index = -1;
+                        for (let i = 0; i < activeMarks.length; i += 1) {
+                          if (current >= activeMarks[i].start) index = i;
+                          else break;
+                        }
+                        setActiveWord(index);
+                      }}
+                      aria-label={`${activeVoice?.label || "Voice"} preview`}
+                    />
+                    {previewWords.length > 0 && (
+                      <p className="preview-transcript">
+                        {previewWords.map((word, index) => (
+                          <span
+                            key={index}
+                            className={`preview-word ${
+                              index === activeWord ? "spoken" : ""
+                            }`}
+                          >
+                            {word}
+                            {index < previewWords.length - 1 ? " " : ""}
+                          </span>
+                        ))}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </section>
