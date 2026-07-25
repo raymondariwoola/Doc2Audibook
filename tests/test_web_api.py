@@ -194,14 +194,17 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual([mark["text"] for mark in cached.json()["marks"]], ["Hello", "world"])
 
     def test_health_reports_missing_ffmpeg(self):
-        with mock.patch("web_api.main.shutil.which", return_value=None):
+        with mock.patch(
+            "web_api.main.media_tools_status",
+            return_value={"ffmpeg": False, "ffprobe": False},
+        ):
             body = self.client.get("/api/health").json()
         self.assertFalse(body["ffmpeg"])
 
     def test_synthesis_failure_detail_flags_missing_ffmpeg(self):
         from web_api.main import _synthesis_failure_detail
 
-        with mock.patch("web_api.main.shutil.which", return_value=None):
+        with mock.patch("web_api.main.media_tool", return_value=None):
             missing = _synthesis_failure_detail(
                 RuntimeError("ffmpeg is required to encode local-provider audio"),
                 action="create the preview",
@@ -209,7 +212,7 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("ffmpeg", missing.lower())
         self.assertIn("PATH", missing)
 
-        with mock.patch("web_api.main.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with mock.patch("web_api.main.media_tool", return_value="/usr/bin/ffmpeg"):
             broken = _synthesis_failure_detail(
                 RuntimeError("ffmpeg failed encoding audio"),
                 action="create the preview",

@@ -9,12 +9,15 @@ Piper and Kokoro provide fully offline alternatives.
 `say`/`espeak` kind), the pipeline is **resumable** if it's interrupted, and the
 final audio is stitched together losslessly with `ffmpeg`.
 
-Three supported ways to use it:
+Four supported ways to use it:
 
 - **CLI** — `narrate mydoc.docx` (scriptable, resumable, batteries-included).
 - **Gradio prototype** — `python app.py` opens the original browser UI.
 - **Phase 3 web app** — `python -m web_api` serves the React UI and FastAPI API
   together at `http://127.0.0.1:8000`.
+- **Phase 4A desktop app** — a Tauri v2 shell packages that React UI with a
+  frozen Python sidecar. Windows x64 internal artifacts now exist; macOS and
+  public-release gates remain pending.
 
 Both browser interfaces remain available and reuse the same engine/provider
 layers. The Phase 3 app does not replace or redirect the prototype.
@@ -39,12 +42,16 @@ and builds the React client when Node.js 22.13+ is available, checks for
 listed in [`voices.manifest.json`](voices.manifest.json). Every model is verified
 against its recorded SHA-256 digest. The command is **idempotent** — re-run it
 after every `git pull` to stay in lockstep. Use `--no-web` to skip Phase 3, or
-`--minimal` for the core CLI only.
+`--minimal` for the core CLI only. Desktop contributors should use
+`python bootstrap.py --desktop`; it adds the pinned PyInstaller requirements and
+checks Rust plus the platform-native WebView2/Xcode prerequisites without
+silently installing or building native components.
 
 **What syncs across machines:** all code, the roadmap, and *which* voices you use
 (the manifest) travel via git. The large bits — `.venv`, `web/node_modules`,
-the built web client, voice model files, generated audio, and the resumable
-chunk cache — are gitignored and rebuilt/re-fetched locally by `bootstrap.py`.
+the built web client, Rust `target/`, frozen sidecars/installers, media binaries,
+voice model files, generated audio, and the resumable chunk cache — are
+gitignored and rebuilt/re-fetched locally.
 So on a new machine: `git pull`
 → `python bootstrap.py` → you're back where you left off. To add a voice for all
 machines, edit `voices.manifest.json`, commit, and run `python sync_voices.py`
@@ -112,7 +119,8 @@ pip install -e ".[ui,web,local]"    # + both UIs + offline providers
 
 ### 2. `ffmpeg` (external dependency — required)
 
-`ffmpeg` (and `ffprobe`, which ships with it) must be on your PATH.
+For the source CLI, Gradio, and Phase 3 web interfaces, `ffmpeg` (and
+`ffprobe`, which ships with it) must be on your `PATH`.
 
 | OS | Install |
 |----|---------|
@@ -122,6 +130,12 @@ pip install -e ".[ui,web,local]"    # + both UIs + offline providers
 | **Linux (Fedora)** | `sudo dnf install ffmpeg` |
 
 Verify with `ffmpeg -version`.
+
+The Phase 4A packaged desktop does not use `PATH`: its build stages exact
+absolute FFmpeg/ffprobe resources, records their hashes/configuration, and fails
+closed if either is missing. The current Windows bundle uses an unreviewed GPL
+build for internal testing only; see
+[`docs/desktop/RELEASE_CHECKLIST.md`](docs/desktop/RELEASE_CHECKLIST.md).
 
 > **Just installed ffmpeg?** Open a **new** terminal (and restart your editor so
 > its integrated terminal reloads `PATH`) before launching the app — an existing
@@ -165,6 +179,32 @@ Kokoro, or Apple `say` when document content must stay offline.
 
 Current restart-recovery and SSE limitations are tracked in
 [`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md).
+
+## Phase 4A native desktop
+
+Phase 4A uses Tauri v2 to own an Edge-only frozen Python/FastAPI sidecar. The
+desktop API binds an ephemeral loopback port, requires a one-use per-launch
+session secret passed through origin-bound Tauri IPC without entering the URL,
+uses native app-data paths, and takes `ffmpeg`/`ffprobe` only from explicitly
+staged resources. The CLI, Gradio prototype, and Phase 3 web app keep their full
+existing provider behavior.
+
+On a desktop build machine:
+
+```powershell
+python bootstrap.py --desktop
+.\.venv\Scripts\python.exe scripts\build_desktop.py --ffmpeg-dir "C:\path\to\ffmpeg\bin" --allow-unreviewed-ffmpeg --bundle
+```
+
+On macOS, use `.venv/bin/python` and a native macOS FFmpeg directory. Build each
+artifact on its target operating system; do not reuse a Windows `.venv`,
+sidecar, or installer on a Mac.
+
+The current Windows x64 MSI/NSIS builds are **unsigned internal development
+artifacts**. The explicit FFmpeg override records a GPL/unknown build for local
+testing; it does not grant redistribution approval. Build instructions, exact
+smoke commands, current evidence, pending macOS work, and release/licensing
+gates live in [`docs/desktop/`](docs/desktop/).
 
 ## Gradio prototype (retained)
 
@@ -438,7 +478,11 @@ After bootstrapping:
 
 ```bash
 python -m unittest discover -s tests -v
-python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py
+python -m compileall -q narrate.py providers.py media_tools.py app.py sync_voices.py bootstrap.py web_api scripts
+npm --prefix web test
+cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path web/src-tauri/Cargo.toml
 ```
 
 The suite covers DOCX/PDF/Markdown/text extraction, cleanup, chunking, rules,
@@ -450,6 +494,7 @@ exercised locally with the sample fixture in `tests/fixtures/sample.txt`.
 
 - Python 3.10+ for the full bootstrap/UI
 - `edge-tts`, `python-docx`, `pypdf` (see [requirements.txt](requirements.txt))
-- `ffmpeg` / `ffprobe` on PATH
+- `ffmpeg` / `ffprobe` on `PATH` for source interfaces; explicitly staged
+  resources for the packaged desktop
 - An internet connection for Edge/OpenAI synthesis and initial model downloads;
   Piper, Kokoro, and Apple run offline afterward

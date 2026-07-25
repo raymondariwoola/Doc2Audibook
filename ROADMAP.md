@@ -20,7 +20,7 @@ desktop app for macOS and Windows** — all running locally, not a public servic
 | **1. Gradio prototype** | ✅ Done | `app.py` — browser UI to *feel* the product |
 | **2. Provider layer** | 🔨 In progress | Pluggable free + paid TTS engines (`providers.py`) |
 | **3. Local web app** | 🔨 In progress | FastAPI + React, runs on `localhost` |
-| **4. Native desktop** | ⬜ Planned | Packaged `.app` (macOS) + `.exe` (Windows) |
+| **4. Native desktop** | 🔨 In progress | Tauri + frozen Python sidecar; Windows 4A internal build exists |
 | **5. Audiobook polish** | ⬜ Planned | M4B chapters, resume UX, library |
 
 Legend: ✅ done · 🔨 in progress · ⬜ planned
@@ -189,22 +189,35 @@ This phase is **additive**: it does not retire the CLI or the Gradio prototype.
 
 ---
 
-## Phase 4 — Native desktop ⬜
+## Phase 4 — Native desktop 🔨
 
 Goal: installable app for macOS **and** Windows.
 
-- [ ] Choose shell: **Tauri** (wrap the Phase 3 web app, small binaries) vs
-      **PySide6/Toga** (pure-Python native). *Decision pending — see below.*
-- [ ] Bundle Python engine + **ffmpeg** so users install nothing.
-- [ ] Native file dialogs, drag-drop, notifications.
-- [ ] Packaging + signing: `.app`/`.dmg` (macOS), `.exe`/installer (Windows).
+- [x] Choose **Tauri v2** so the native shell reuses the Phase 3 React interface
+      and owns a frozen Python/FastAPI sidecar.
+- [x] Define and implement the Phase 4A desktop boundary: an authenticated
+      ephemeral loopback API, native app-data paths, a one-use origin-bound
+      in-memory Tauri token handoff, exact bundled media-tool paths,
+      deterministic resource staging, and an Edge-only frozen provider scope.
+- [x] Add native document selection. The backend copies the selected document
+      into managed storage before processing it.
+- [x] Produce and artifact-smoke unsigned Windows x64 internal MSI and NSIS
+      builds, including real Edge MP3/M4A/WAV renders through bundled media
+      tools. These development artifacts are not approved for distribution.
+- [ ] Finish the remaining Windows 4A physical gates: safe Unicode-path
+      selection, full GUI render/library restart and recovery, active-render
+      process cleanup, and installer install/uninstall behavior.
+- [ ] Build and physically verify the same Edge-only contract natively on macOS
+      after switching to a Mac; do not substitute a Windows cross-build.
+- [ ] Review FFmpeg and dependency redistribution, collect third-party notices,
+      then add signing: Authenticode for Windows and Developer ID
+      signing/notarization for macOS.
+- [ ] Add drag-drop and native notifications after the core desktop acceptance
+      path is complete.
 - [ ] Auto-update channel (optional).
 
-**Open decision — desktop shell**
-- *Tauri:* reuses the React UI directly, tiny binaries, but adds a Rust toolchain.
-- *PySide6:* pure Python (no second UI codebase), but a separate UI from the web app.
-- *pywebview:* lightest wrapper around the web app; middle ground.
-- **Leaning Tauri** so Phase 3 and Phase 4 share one UI. Revisit after Phase 3.
+The Phase 4A architecture, current evidence, machine-switch procedure, and
+release boundary are maintained in [`docs/desktop/`](docs/desktop/).
 
 ---
 
@@ -391,3 +404,24 @@ Record notable choices here so future-us remembers the *why*.
   (via a shared `_synthesis_failure_detail`) rather than a generic error, without
   leaking internals. Screenshot-verified; +2 backend tests, full suite green (44),
   `vite build` clean. R-015 stays controlled but is now self-diagnosing.
+- **2026-07-25** — Started **Phase 4A** and selected Tauri v2. Added an
+  authenticated ephemeral FastAPI sidecar, one-use desktop session bootstrap,
+  native file selection with managed copies, exact packaged media-tool
+  resolution, Edge-only PyInstaller freezing, deterministic provenance-aware
+  staging, and a Rust-owned lifecycle with single-instance and visible startup
+  failures. On Windows x64, built unsigned internal MSI and NSIS debug
+  installers; repeatedly smoked the frozen artifact outside the source tree and
+  completed real Edge MP3/M4A/WAV renders through its bundled FFmpeg. Physical
+  checks covered native launch/dialog, Edge preview, single instance, idle
+  shutdown, and fault-injected missing-resource UX. Active-render shutdown,
+  full GUI library/recovery, installer lifecycle, public redistribution/signing,
+  and every macOS gate remain explicitly open in
+  [`docs/desktop/STATUS.md`](docs/desktop/STATUS.md).
+- **2026-07-25** — Rejected the first desktop bootstrap design after physical
+  security validation found that WebView2 persisted fragment-bearing navigation
+  URLs even after `history.replaceState`. Replaced it before handoff with a
+  one-use, exact-origin Tauri command backed only by Rust memory; the webview now
+  navigates to a clean URL and exchanges that in-memory value for the same
+  strict HttpOnly API session. Rebuilt both Windows installers, passed six Rust
+  tests and six React tests, re-ran frozen Edge MP3/M4A/WAV acceptance, and
+  confirmed a corrected native launch added no token-shaped history entry.

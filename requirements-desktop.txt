@@ -1,0 +1,14 @@
+# Phase 4A desktop sidecar and packaging dependencies.
+#
+# Install from the repository root with:
+#   python -m pip install -r requirements-desktop.txt
+#
+# Deliberately do not include requirements-local.txt here. The Phase 4A frozen
+# sidecar supports Edge TTS only; Piper/Kokoro and their additional
+# runtime/model licensing obligations are not part of the desktop installer.
+
+-r requirements.txt
+-r requirements-web.txt
+
+pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6

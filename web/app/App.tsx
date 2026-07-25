@@ -35,6 +35,13 @@ import {
   type DragEvent,
   type FormEvent,
 } from "react";
+import {
+  chooseNativeDocument,
+  documentNameFromPath,
+  establishDesktopSession,
+  extensionForName,
+  isDesktopRuntime,
+} from "./desktop";
 
 type ConnectionState = "checking" | "ready" | "offline";
 type JobStatus = "queued" | "running" | "completed" | "failed";
@@ -107,6 +114,21 @@ type Job = {
 };
 
 type AppView = "studio" | "library";
+type SelectedDocument = {
+  name: string;
+  size?: number;
+  browserFile?: File;
+  desktopPath?: string;
+};
+
+const desktopRuntime = isDesktopRuntime();
+let desktopSessionPromise: Promise<void> | null = null;
+
+function ensureDesktopSession(): Promise<void> {
+  if (!desktopRuntime) return Promise.resolve();
+  desktopSessionPromise ??= establishDesktopSession();
+  return desktopSessionPromise;
+}
 
 const STATUS_LABELS: Record<JobStatus, string> = {
   queued: "Queued",
@@ -194,11 +216,6 @@ function describeNarrator(settings?: JobSettings): string {
   return parts.length ? parts.join(" · ") : "Narrated audiobook";
 }
 
-function extensionFor(file: File): string {
-  const dotIndex = file.name.lastIndexOf(".");
-  return dotIndex >= 0 ? file.name.slice(dotIndex).toLowerCase() : "";
-}
-
 function parseRules(value: string): Rule[] {
   return value
     .split(/\r?\n/)
@@ -278,7 +295,8 @@ export default function App() {
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [selectedVoice, setSelectedVoice] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<SelectedDocument | null>(null);
+  const [apiReady, setApiReady] = useState(!desktopRuntime);
   const [dragActive, setDragActive] = useState(false);
   const [rate, setRate] = useState(-4);
   const [pitch, setPitch] = useState(0);
@@ -408,9 +426,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void checkHealth();
-    void loadProviders();
-  }, [checkHealth, loadProviders]);
+    if (!apiReady && desktopRuntime) {
+      void ensureDesktopSession()
+        .then(() => setApiReady(true))
+        .catch((caught) => {
+          setConnection("offline");
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "The desktop narration engine could not be authenticated.",
+          );
+        });
+      return;
+    }
+    if (apiReady) {
+      void checkHealth();
+      void loadProviders();
+    }
+  }, [apiReady, checkHealth, loadProviders]);
 
   // Refresh the library whenever it is opened, and after a job completes so a
   // freshly rendered audiobook appears without a manual reload.
@@ -531,7 +564,7 @@ export default function App() {
       setFile(null);
       return;
     }
-    if (!ALLOWED_EXTENSIONS.includes(extensionFor(nextFile))) {
+    if (!ALLOWED_EXTENSIONS.includes(extensionForName(nextFile.name))) {
       setError("Choose a DOCX, PDF, TXT, or Markdown document.");
       return;
     }
@@ -539,7 +572,35 @@ export default function App() {
       setError("That document is larger than 100 MB.");
       return;
     }
-    setFile(nextFile);
+    setFile({
+      name: nextFile.name,
+      size: nextFile.size,
+      browserFile: nextFile,
+    });
+  }
+
+  function chooseDesktopPath(path: string) {
+    setError("");
+    setJob(null);
+    const name = documentNameFromPath(path);
+    if (!name || !ALLOWED_EXTENSIONS.includes(extensionForName(name))) {
+      setError("Choose a DOCX, PDF, TXT, or Markdown document.");
+      return;
+    }
+    setFile({ name, desktopPath: path });
+  }
+
+  async function browseForFile() {
+    if (!desktopRuntime) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const path = await chooseNativeDocument();
+      if (path) chooseDesktopPath(path);
+    } catch {
+      setError("The native file picker could not be opened.");
+    }
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -610,7 +671,13 @@ export default function App() {
     setJob(null);
     try {
       const body = new FormData();
-      body.append("document", file);
+      if (file.browserFile) {
+        body.append("document", file.browserFile);
+      } else if (file.desktopPath) {
+        body.append("desktop_path", file.desktopPath);
+      } else {
+        throw new Error("Choose a document before starting narration.");
+      }
       body.append("provider", selectedProvider);
       body.append("voice", selectedVoice);
       body.append("rate", String(rate));
@@ -809,11 +876,11 @@ export default function App() {
                   onDragOver={(event) => event.preventDefault()}
                   onDragLeave={() => setDragActive(false)}
                   onDrop={onDrop}
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => void browseForFile()}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      fileInputRef.current?.click();
+                      void browseForFile();
                     }
                   }}
                   role="button"
@@ -839,8 +906,10 @@ export default function App() {
                   <div className="file-details">
                     <strong title={file.name}>{file.name}</strong>
                     <span>
-                      {extensionFor(file).slice(1).toUpperCase()} ·{" "}
-                      {formatBytes(file.size)}
+                      {extensionForName(file.name).slice(1).toUpperCase()} ·{" "}
+                      {file.size === undefined
+                        ? "Selected from this computer"
+                        : formatBytes(file.size)}
                     </span>
                   </div>
                   <button

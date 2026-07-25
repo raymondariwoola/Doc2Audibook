@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-take-desktop-bootstrap-token"
+description = "Allows the main desktop webview to consume its one-time in-memory bootstrap credential."
+commands.allow = ["take_desktop_bootstrap_token"]

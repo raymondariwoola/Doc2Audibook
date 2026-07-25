@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
-import shutil
+import secrets
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
@@ -34,6 +35,7 @@ from starlette.staticfiles import StaticFiles
 
 import narrate
 import providers
+from media_tools import media_tool, media_tools_status
 
 
 SERVICE_VERSION = "0.1.0"
@@ -66,6 +68,9 @@ MAX_RULE_JSON_CHARS = 64 * 1024
 MAX_RULES = 250
 MAX_RULE_SOURCE_CHARS = 500
 MAX_RULE_TARGET_CHARS = 2_000
+DESKTOP_TOKEN_ENV = "DOC2AUDIOBOOK_DESKTOP_TOKEN"
+DESKTOP_SESSION_COOKIE = "doc2audiobook_desktop_session"
+DESKTOP_TOKEN_HEADER = "X-Doc2Audiobook-Desktop-Token"
 # Bound on jobs that are queued or running at once. Generation is already
 # serialized (R-004), so this caps the *waiting* set a burst can create; new
 # submissions past it are rejected with 429 (deduped resubmissions are exempt).
@@ -115,7 +120,11 @@ def _synthesis_failure_detail(exc: Exception, *, action: str) -> str:
     "create the preview" or "generate the audiobook".
     """
     if "ffmpeg" in str(exc).lower():
-        if shutil.which("ffmpeg") is None:
+        try:
+            ffmpeg_available = media_tool("ffmpeg") is not None
+        except RuntimeError:
+            ffmpeg_available = False
+        if not ffmpeg_available:
             return (
                 "This voice needs ffmpeg to produce audio, but ffmpeg was not found "
                 "on PATH. Install it (see the README), then restart the app from a "
@@ -153,6 +162,16 @@ def _origin_allowed(request: Request, origin: str | None) -> bool:
         ):
             return True
     return False
+
+
+def _is_api_request_path(path: str) -> bool:
+    """Recognize canonical and compatibility API routes for desktop auth."""
+    if path == "/api" or path.startswith("/api/"):
+        return True
+    return any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in ("/health", "/providers", "/preview", "/jobs")
+    )
 
 
 def _provider_or_404(provider_id: str) -> providers.TTSProvider:
@@ -495,6 +514,47 @@ async def _save_upload(upload: UploadFile, destination: Path) -> str:
     return digest.hexdigest()
 
 
+async def _save_desktop_document(source: Path, destination: Path) -> str:
+    """Copy a native-picker selection into managed storage and hash it."""
+    try:
+        source = source.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise HTTPException(
+            status_code=422, detail="The selected document is unavailable."
+        ) from exc
+    if not source.is_file():
+        raise HTTPException(status_code=422, detail="The selected document is not a file.")
+    if source.stat().st_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Document exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+        )
+
+    def copy_and_hash() -> str:
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with source.open("rb") as incoming, destination.open("wb") as output:
+                while chunk := incoming.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "Document exceeds the "
+                                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
+                            ),
+                        )
+                    digest.update(chunk)
+                    output.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return digest.hexdigest()
+
+    return await asyncio.to_thread(copy_and_hash)
+
+
 def _render_identity(
     content_hash: str,
     suffix: str,
@@ -643,6 +703,7 @@ def create_app(
     storage_root: Path | None = None,
     preview_root: Path | None = None,
     frontend_dist: Path | None = None,
+    desktop_token: str | None = None,
 ) -> FastAPI:
     """Create an isolated API instance; custom roots keep tests disposable."""
     resolved_storage = _repo_relative(
@@ -655,6 +716,14 @@ def create_app(
     )
     resolved_frontend = _repo_relative(frontend_dist or DEFAULT_FRONTEND_DIST)
     resolved_previews.mkdir(parents=True, exist_ok=True)
+    configured_desktop_token = (
+        desktop_token
+        if desktop_token is not None
+        else os.environ.get(DESKTOP_TOKEN_ENV, "")
+    )
+    if configured_desktop_token and len(configured_desktop_token) < 32:
+        raise ValueError("The desktop bootstrap token must be at least 32 characters.")
+    desktop_session = secrets.token_urlsafe(32) if configured_desktop_token else ""
 
     api = FastAPI(
         title="Doc2Audiobook local API",
@@ -666,6 +735,9 @@ def create_app(
     api.state.preview_locks = {}
     api.state.generation_lock = asyncio.Lock()
     api.state.running_tasks = set()
+    api.state.desktop_token = configured_desktop_token
+    api.state.desktop_session = desktop_session
+    api.state.desktop_bootstrap_used = False
 
     api.add_middleware(
         CORSMiddleware,
@@ -684,9 +756,18 @@ def create_app(
 
     @api.middleware("http")
     async def enforce_browser_origin(request: Request, call_next):
+        path = request.scope.get("path", "")
+        if configured_desktop_token and _is_api_request_path(path):
+            if path != "/api/desktop/session":
+                supplied_session = request.cookies.get(DESKTOP_SESSION_COOKIE, "")
+                if not hmac.compare_digest(supplied_session, desktop_session):
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Desktop session is not authenticated."},
+                    )
         if (
             request.method == "POST"
-            and request.scope.get("path") in STATE_CHANGING_PATHS
+            and path in STATE_CHANGING_PATHS
             and not _origin_allowed(request, request.headers.get("origin"))
         ):
             return JSONResponse(
@@ -695,16 +776,53 @@ def create_app(
             )
         return await call_next(request)
 
+    @api.post("/api/desktop/session", include_in_schema=False)
+    async def establish_desktop_session(request: Request) -> JSONResponse:
+        if not configured_desktop_token:
+            raise HTTPException(status_code=404, detail="Not found.")
+        supplied = request.headers.get(DESKTOP_TOKEN_HEADER, "")
+        if api.state.desktop_bootstrap_used or not hmac.compare_digest(
+            supplied, configured_desktop_token
+        ):
+            raise HTTPException(status_code=401, detail="Desktop bootstrap failed.")
+        api.state.desktop_bootstrap_used = True
+        response = JSONResponse({"status": "ready", "desktop": True})
+        response.set_cookie(
+            DESKTOP_SESSION_COOKIE,
+            desktop_session,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+        return response
+
+    @api.middleware("http")
+    async def add_desktop_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        if configured_desktop_token:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                "form-action 'self'; img-src 'self' data:; media-src 'self' blob:; "
+                "script-src 'self'; style-src 'self'; connect-src 'self'"
+            )
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     @api.get("/health", include_in_schema=False)
     @api.get("/api/health", tags=["system"])
     async def health() -> dict[str, Any]:
         # ffmpeg assembles every audiobook and transcodes the offline providers'
         # previews; report it so the UI can warn before a job or preview fails.
+        tools = media_tools_status()
         return {
             "status": "ok",
             "service": "doc2audiobook",
             "version": SERVICE_VERSION,
-            "ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffmpeg": tools["ffmpeg"],
+            "ffprobe": tools["ffprobe"],
+            "desktop": bool(configured_desktop_token),
         }
 
     @api.get("/providers", include_in_schema=False)
@@ -868,7 +986,8 @@ def create_app(
     @api.post("/jobs", include_in_schema=False, status_code=202)
     @api.post("/api/jobs", tags=["jobs"], status_code=202)
     async def create_job(
-        document: UploadFile = File(...),
+        document: UploadFile | None = File(None),
+        desktop_path: str | None = Form(None),
         provider: str = Form(providers.DEFAULT_PROVIDER_ID),
         voice: str = Form(...),
         rate: int = Form(-4),
@@ -897,11 +1016,34 @@ def create_app(
         voice = voice.strip()
         if not voice:
             raise HTTPException(status_code=422, detail="Voice cannot be blank.")
-        filename = Path(document.filename or "").name
+        selected_path: Path | None = None
+        if document is not None and desktop_path:
+            await document.close()
+            raise HTTPException(
+                status_code=422,
+                detail="Choose either an uploaded document or a desktop path, not both.",
+            )
+        if document is not None:
+            filename = Path(document.filename or "").name
+        elif desktop_path:
+            if not configured_desktop_token:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Native document paths are available only in the desktop app.",
+                )
+            selected_path = Path(desktop_path)
+            if not selected_path.is_absolute():
+                raise HTTPException(
+                    status_code=422, detail="The selected desktop path must be absolute."
+                )
+            filename = selected_path.name
+        else:
+            raise HTTPException(status_code=422, detail="Choose a document.")
         suffix = Path(filename).suffix.lower()
         if suffix not in narrate.EXTRACTORS:
             allowed = ", ".join(sorted(narrate.EXTRACTORS))
-            await document.close()
+            if document is not None:
+                await document.close()
             raise HTTPException(
                 status_code=415,
                 detail=f"Unsupported document type '{suffix or '(none)'}'. Use: {allowed}.",
@@ -929,7 +1071,11 @@ def create_app(
 
         store: JobStore = api.state.job_store
         temporary = store.uploads_root / f"{uuid.uuid4().hex}.upload"
-        content_hash = await _save_upload(document, temporary)
+        if document is not None:
+            content_hash = await _save_upload(document, temporary)
+        else:
+            assert selected_path is not None
+            content_hash = await _save_desktop_document(selected_path, temporary)
         render_key = _render_identity(content_hash, suffix, engine, settings)
         job_id = render_key[:32]
         job_dir = store.jobs_root / job_id

@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from media_tools import require_media_tool
+
 
 # ----------------------------------------------------------------------------
 # Data types shared across providers
@@ -383,10 +385,14 @@ class OpenAIProvider(TTSProvider):
 
 
 def _transcode_wav_to_mp3(wav_path: Path, out_path: Path, bitrate: str = "64k") -> None:
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is required to encode local-provider audio to MP3.")
+    try:
+        ffmpeg = require_media_tool("ffmpeg")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "ffmpeg is required to encode local-provider audio to MP3."
+        ) from exc
     tmp = out_path.with_suffix(out_path.suffix + ".part")
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
            "-i", str(wav_path), "-c:a", "libmp3lame", "-b:a", bitrate,
            "-f", "mp3", str(tmp)]   # .part extension needs an explicit format
     result = subprocess.run(cmd, capture_output=True, text=True)

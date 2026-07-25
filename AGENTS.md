@@ -19,8 +19,9 @@ strictly separated (interfaces depend on the engine, never the reverse):
   UI depend on them.
 - **Interfaces** — [`narrate.py`](narrate.py) CLI, retained Gradio prototype
   [`app.py`](app.py), and Phase 3 FastAPI + React app in [`web_api/`](web_api/)
-  and [`web/`](web/). These are additive clients of the same engine; never make
-  one interface import another. The long-term plan is in
+  and [`web/`](web/), plus the Phase 4A Tauri shell in
+  [`web/src-tauri/`](web/src-tauri/). These are additive clients of the same
+  engine; never make one interface import another. The long-term plan is in
   [`ROADMAP.md`](ROADMAP.md); active limitations and remediations are in
   [`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md). Read both
   before large changes and update them as you go.
@@ -42,6 +43,10 @@ missing), and downloads the offline voice models in
 verifying every model against its recorded SHA-256 digest. It also repairs an
 interrupted `.venv` whose Python exists but whose pip installation is incomplete.
 Works on macOS/Windows/Linux (pure-stdlib bootstrap, cross-platform venv paths).
+For native desktop work, use `python bootstrap.py --desktop`: it retains the
+ordinary setup, installs pinned desktop build-only dependencies, and checks
+Rust plus WebView2 (Windows) or Xcode Command Line Tools (macOS). It does not
+auto-install native toolchains or create an installer.
 
 **What transfers via git and what doesn't:**
 
@@ -51,6 +56,7 @@ Works on macOS/Windows/Linux (pure-stdlib bootstrap, cross-platform venv paths).
 | Which voices you use (the manifest) | `piper_voices/`, `kokoro_models/` (re-downloaded by bootstrap) |
 | | `web/node_modules/`, `web/dist/` (rebuilt by bootstrap) |
 | | `outputs/`, `*_chunks/`, `.narrate_cache/` (regenerated on demand) |
+| | Rust `target/`, frozen sidecars, Tauri resources/installers, bundled media tools |
 
 So "pick up where we left off" = code/roadmap via git + `python bootstrap.py` to
 restore the environment and identical voice set. In-progress *renders* and the
@@ -116,6 +122,30 @@ npm --prefix web ci && npm --prefix web run build   # produces web/dist
 falls back to source `web/dist` for dev, so nothing changes when running from the
 tree. `web_api/frontend/`, `build/`, and `dist/` are gitignored build artifacts.
 
+## Building the Phase 4A native desktop app
+
+Read [`docs/desktop/STATUS.md`](docs/desktop/STATUS.md) first, then follow
+[`docs/desktop/BUILDING.md`](docs/desktop/BUILDING.md) and
+[`docs/desktop/TESTING.md`](docs/desktop/TESTING.md). The canonical entry point
+is `scripts/build_desktop.py`; do not manually stage the React client, sidecar,
+or media tools.
+
+Phase 4A's frozen provider scope is deliberately **Edge only**. Piper/Kokoro
+models and optional local-provider runtimes are excluded pending redistribution
+review. A GPL/unknown FFmpeg input needs `--allow-unreviewed-ffmpeg`, which marks
+the output internal-only and never permits an `--enable-nonfree` build.
+
+The desktop bootstrap secret must remain in Rust memory and cross into React
+only through the one-use, exact-origin Tauri command. Never put it in a URL
+query/fragment: WebView2 can persist navigated URLs even after JavaScript
+replaces browser history.
+
+Build natively on the target host. Windows and macOS `.venv`, Rust output,
+sidecars, media binaries, and installers are machine-local and must not be
+copied across operating systems. Current Windows artifacts are unsigned and not
+approved for public distribution; macOS remains unverified until tested on a
+physical Mac.
+
 ## Conventions & guardrails
 
 - **Environment:** always use `.venv` (created by bootstrap). Run tools as
@@ -144,9 +174,12 @@ tree. `web_api/frontend/`, `build/`, and `dist/` are gitignored build artifacts.
 ## Quick test commands
 
 ```bash
-.venv/bin/python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py web_api/*.py
+.venv/bin/python -m compileall -q narrate.py providers.py media_tools.py app.py sync_voices.py bootstrap.py web_api scripts
 .venv/bin/python -m unittest discover -s tests -v
-cd web && npm test
+npm --prefix web test
+cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path web/src-tauri/Cargo.toml
 .venv/bin/python narrate.py --list-voices en-US
 .venv/bin/python narrate.py sample.docx --provider piper --voice en_US-lessac-medium
 .venv/bin/python -c "import providers as P; print([p.id for p in P.available_providers()])"

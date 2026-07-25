@@ -1,9 +1,19 @@
-"""Local FastAPI interface for Doc2Audiobook.
+"""Local web and desktop-sidecar interfaces.
 
-The web API is additive: it imports the reusable engine and provider layers but
-does not change the CLI or the Gradio prototype.
+Package import stays lazy so a frozen desktop process can apply absolute
+runtime paths before ``providers`` and the default FastAPI app are constructed.
 """
 
-from .main import app, create_app
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = ["app", "create_app"]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in __all__:
+        raise AttributeError(name)
+    from .main import app, create_app
+
+    return {"app": app, "create_app": create_app}[name]

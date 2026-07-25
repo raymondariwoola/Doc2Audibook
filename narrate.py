@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from media_tools import media_tool, require_media_tool
+
 # ----------------------------------------------------------------------------
 # Defaults
 # ----------------------------------------------------------------------------
@@ -527,11 +529,12 @@ async def list_voices(filter_substr: str | None,
 
 
 def assemble(chunk_paths: list[Path], output: Path, work_dir: Path) -> None:
-    if not shutil.which("ffmpeg"):
+    try:
+        ffmpeg = require_media_tool("ffmpeg")
+    except RuntimeError as exc:
         raise RuntimeError(
-            "ffmpeg was not found on PATH. Install it (see README) and re-run — "
-            "your chunk files are preserved, so this will resume instantly."
-        )
+            f"{exc} Your chunk files are preserved, so this will resume instantly."
+        ) from exc
     list_file = work_dir / "concat_list.txt"
     with list_file.open("w", encoding="utf-8") as fh:
         for p in chunk_paths:
@@ -541,7 +544,7 @@ def assemble(chunk_paths: list[Path], output: Path, work_dir: Path) -> None:
 
     output.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", str(list_file),
         "-c", "copy", str(output),
     ]
@@ -562,7 +565,8 @@ SUPPORTED_FORMATS = {
 def _transcode(src: Path, dst: Path, fmt: str) -> None:
     """Re-encode the concatenated audio into a non-mp3 container via ffmpeg."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    ffmpeg = require_media_tool("ffmpeg")
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
            "-i", str(src), *SUPPORTED_FORMATS[fmt], str(dst)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -584,10 +588,14 @@ def encode_output(chunk_paths: list[Path], output: Path, work_dir: Path, fmt: st
 
 
 def probe_duration(path: Path) -> float | None:
-    if not shutil.which("ffprobe"):
+    try:
+        ffprobe = media_tool("ffprobe")
+    except RuntimeError:
+        return None
+    if not ffprobe:
         return None
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
         capture_output=True, text=True,
     )

@@ -24,6 +24,8 @@ Flags:
   --no-web      skip the FastAPI backend and React frontend
   --no-local    skip the offline local-provider packages (Piper/Kokoro)
   --no-voices   skip downloading voice models
+  --desktop     additionally install Phase 4A build dependencies and check the
+                native toolchain (does not build or install system prerequisites)
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ VENV = ROOT / ".venv"
 PIP_VERSION = "26.1.2"
 SETUPTOOLS_VERSION = "83.0.0"
 MIN_NODE_VERSION = (22, 13, 0)
+DESKTOP_REQUIREMENTS = ROOT / "requirements-desktop.txt"
 
 
 def venv_python() -> Path:
@@ -154,12 +157,140 @@ def sync_voices(minimal: bool, no_local: bool, no_voices: bool) -> None:
     run([str(venv_python()), str(ROOT / "sync_voices.py")])
 
 
+def install_desktop_deps() -> None:
+    """Install the pinned, Python-side desktop build dependencies."""
+    step("Desktop 1/2  Python build dependencies")
+    if not DESKTOP_REQUIREMENTS.is_file():
+        raise FileNotFoundError(
+            f"Desktop requirements file is missing: {DESKTOP_REQUIREMENTS}"
+        )
+    run(
+        [
+            str(venv_python()),
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(DESKTOP_REQUIREMENTS),
+        ]
+    )
+
+
+def _windows_webview2_available(
+    environment: dict[str, str] | None = None,
+) -> bool:
+    """Return whether an Evergreen WebView2 runtime is installed.
+
+    WebView2 is not normally placed on PATH. Check the documented machine and
+    per-user installation roots without changing the host.
+    """
+    env = os.environ if environment is None else environment
+    roots = []
+    for variable in ("ProgramFiles(x86)", "PROGRAMFILES", "LOCALAPPDATA"):
+        value = env.get(variable)
+        if value:
+            roots.append(Path(value) / "Microsoft" / "EdgeWebView" / "Application")
+    for root in roots:
+        try:
+            if any(
+                executable.is_file()
+                for executable in root.glob("*/msedgewebview2.exe")
+            ):
+                return True
+        except OSError:
+            # A locked-down machine may deny one installation root. Continue
+            # checking the remaining machine/per-user locations.
+            continue
+    return False
+
+
+def _macos_xcode_cli_available() -> bool:
+    """Return whether macOS has an active Xcode Command Line Tools directory."""
+    xcode_select = shutil.which("xcode-select")
+    if xcode_select is None:
+        return False
+    try:
+        result = subprocess.run(
+            [xcode_select, "-p"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def check_desktop_prerequisites(platform_name: str | None = None) -> bool:
+    """Report native Phase 4A prerequisites without installing any of them.
+
+    Returns True when every prerequisite checked for the current platform is
+    present. A missing tool is a warning rather than a bootstrap failure so the
+    regular CLI and web interfaces remain usable.
+    """
+    step("Desktop 2/2  Native prerequisites")
+    platform_id = platform_name or sys.platform
+    missing_rust = [
+        name for name in ("rustc", "cargo") if shutil.which(name) is None
+    ]
+    ready = not missing_rust
+    if missing_rust:
+        print(f"  [warning] Missing Rust tools: {', '.join(missing_rust)}")
+        if platform_id == "win32":
+            print("  Install Rust, then reopen the terminal:")
+            print("     winget install --id Rustlang.Rustup --exact")
+            print("     rustup default stable-msvc")
+        else:
+            print("  Install Rust, then reopen the terminal:")
+            print(
+                "     curl --proto '=https' --tlsv1.2 -sSf "
+                "https://sh.rustup.rs | sh"
+            )
+    else:
+        print("  [ok] Rust compiler and Cargo found")
+
+    if platform_id == "win32":
+        if _windows_webview2_available():
+            print("  [ok] Microsoft Edge WebView2 Runtime found")
+        else:
+            ready = False
+            print("  [warning] Microsoft Edge WebView2 Runtime was not found.")
+            print("  Install it, then rerun bootstrap:")
+            print(
+                "     winget install --id Microsoft.EdgeWebView2Runtime --exact"
+            )
+    elif platform_id == "darwin":
+        if _macos_xcode_cli_available():
+            print("  [ok] Xcode Command Line Tools found")
+        else:
+            ready = False
+            print("  [warning] Xcode Command Line Tools were not found.")
+            print("  Install them, then rerun bootstrap:")
+            print("     xcode-select --install")
+    else:
+        ready = False
+        print(
+            "  [warning] Phase 4A packaging is currently supported only on "
+            "Windows x64 and macOS."
+        )
+
+    if ready:
+        print("  [ok] Native desktop prerequisites are ready")
+    else:
+        print(
+            "  Desktop packaging is not ready yet; the regular application "
+            "setup completed normally."
+        )
+    return ready
+
+
 def main(argv: list[str]) -> int:
     minimal = "--minimal" in argv
     no_ui = "--no-ui" in argv
     no_web = "--no-web" in argv
     no_local = "--no-local" in argv
     no_voices = "--no-voices" in argv
+    desktop = "--desktop" in argv
 
     print("Doc2Audiobook - bootstrap")
     print(f"Python: {sys.version.split()[0]}  |  Platform: {sys.platform}  |  Root: {ROOT}")
@@ -169,6 +300,9 @@ def main(argv: list[str]) -> int:
     build_web_frontend(minimal, no_web)
     check_ffmpeg()
     sync_voices(minimal, no_local, no_voices)
+    if desktop:
+        install_desktop_deps()
+        check_desktop_prerequisites()
 
     py = venv_python()
     step("Ready")
@@ -182,6 +316,10 @@ def main(argv: list[str]) -> int:
     print(f"  {py} narrate.py mydoc.docx               # narrate a document")
     print(f"  {py} app.py                              # Gradio prototype")
     print(f"  {py} -m web_api                          # Phase 3 local web app")
+    if desktop:
+        print("\nDesktop build checks:")
+        print(f"  {py} scripts/build_desktop.py --help")
+        print("  npm --prefix web run tauri -- --version")
     return 0
 
 

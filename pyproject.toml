@@ -31,7 +31,7 @@ narrate-ui = "app:main"
 narrate-web = "web_api.__main__:main"
 
 [tool.setuptools]
-py-modules = ["narrate", "providers", "app"]
+py-modules = ["narrate", "providers", "media_tools", "app"]
 
 [tool.setuptools.packages.find]
 include = ["web_api*"]

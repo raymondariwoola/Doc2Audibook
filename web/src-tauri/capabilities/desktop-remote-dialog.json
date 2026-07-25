@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "desktop-remote-dialog",
+  "description": "Allow only desktop bootstrap and the native open-file dialog from the loopback UI.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "platforms": ["macOS", "windows"],
+  "permissions": [
+    "allow-take-desktop-bootstrap-token",
+    "dialog:allow-open"
+  ]
+}
