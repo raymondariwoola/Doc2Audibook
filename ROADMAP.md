@@ -93,6 +93,10 @@ Goal: make the vision **tangible** fast, on top of the existing engine.
 - [x] Professional responsive UI refresh: branded product header, structured
       four-step configuration flow, card-based result workspace, polished empty
       state, and mobile/tablet breakpoints.
+- [x] **Theme-aware styling** (light **and** dark): every surface (canvas, cards,
+      hero, controls) adapts via Gradio's `.dark` class, fixing the light/dark
+      clash. Gradient hero, and empty audio players stay hidden until they hold
+      real audio.
 
 **Engine work folded in this phase**
 - [x] Add **pitch** support through the pipeline (`edge-tts` supports `pitch=`).
@@ -270,3 +274,14 @@ Record notable choices here so future-us remembers the *why*.
   default component stack with a branded header, clear four-step configuration
   hierarchy, dedicated voice-preview and output areas, restrained typography and
   color tokens, purposeful empty/result states, and tablet/mobile breakpoints.
+- **2026-07-25** — Fixed the prototype's light/dark clash and modernized the look.
+  The previous refresh hardcoded light colors, so on a dark-mode system the page
+  chrome stayed light while Gradio's own components rendered dark — a broken
+  hybrid. Reworked `app.py`'s CSS into light-default tokens overridden under
+  Gradio's `.dark` class, so canvas, cards, hero, and controls stay coherent in
+  both themes. Also: a gradient indigo→violet hero (replacing flat near-black),
+  gradient primary button, pill section kickers, and empty preview/audiobook/
+  download players now hidden until they contain audio (no dead grey boxes). Only
+  styling and component `visible` flags changed — no callback or engine logic.
+  Installed Playwright + headless Chromium in the venv to screenshot-verify the UI
+  in both themes; kept as a reusable capability for future UI work.

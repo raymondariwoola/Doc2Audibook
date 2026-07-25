@@ -68,6 +68,24 @@ Providers advertise `capabilities()` (rate/pitch support, needs_api_key). The UI
 and CLI adapt to these — e.g. the pitch control disables where unsupported. Add a
 provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
 
+## Running the prototype
+
+```bash
+.venv/bin/python app.py          # serves the Gradio UI at http://127.0.0.1:7860
+```
+
+If 7860 is taken it falls back to 7861, 7862, … — check the console line or
+`netstat`/`lsof` for the actual port. Theme and CSS are passed to `launch()`, so a
+running instance will **not** hot-reload style changes; restart it to see them.
+The UI is **theme-aware** — verify both light and dark after any styling change.
+
+**Screenshot-verify the UI (headless).** Playwright + Chromium are installed in
+the `.venv` for this. Launch the app, then drive a headless browser against it,
+forcing each theme with the `?__theme=light` / `?__theme=dark` query param (also
+`page.emulate_media(color_scheme=…)`), `full_page=True`, and a ~2.5s settle after
+`networkidle`. Always capture **both** themes — this is how the earlier light/dark
+clash was caught.
+
 ## Conventions & guardrails
 
 - **Environment:** always use `.venv` (created by bootstrap). Run tools as
@@ -76,6 +94,9 @@ provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
   default and preserve `narrate`'s public function signatures. Verify the CLI and
   the `app.py` callbacks still work after provider changes.
 - **Never commit** `.venv/`, voice models, or generated audio (see `.gitignore`).
+- **Dev-only tooling:** Playwright + headless Chromium live in the `.venv` for
+  screenshot-verifying the UI (see *Running the prototype*). They are a local dev
+  aid, not a runtime dependency — do not add them to the app's requirements.
 - **Cache safety:** `narrate.py` fingerprints cleaned chunks plus provider/model,
   voice, pitch, rate, and chunk size. Keep that identity current when adding any
   new audio-affecting option. UI render digests must additionally include every
