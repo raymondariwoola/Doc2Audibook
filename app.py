@@ -41,22 +41,56 @@ DEFAULT_PROVIDER = providers.DEFAULT_PROVIDER_ID
 
 APP_THEME = gr.themes.Base(
     primary_hue=gr.themes.colors.indigo,
-    secondary_hue=gr.themes.colors.cyan,
+    secondary_hue=gr.themes.colors.violet,
     neutral_hue=gr.themes.colors.slate,
     spacing_size=gr.themes.sizes.spacing_md,
-    radius_size=gr.themes.sizes.radius_md,
+    radius_size=gr.themes.sizes.radius_lg,
+    font=["Inter", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
+).set(
+    body_background_fill="var(--d2a-canvas)",
+    body_background_fill_dark="var(--d2a-canvas)",
+    block_radius="16px",
+    input_radius="12px",
+    button_large_radius="12px",
+    button_small_radius="10px",
 )
 
 APP_CSS = """
-:root {
-    --d2a-ink: #0f172a;
-    --d2a-muted: #64748b;
-    --d2a-line: #dbe4f0;
+/* ------------------------------------------------------------------ *
+ * Theme tokens — light defaults, overridden under Gradio's .dark class
+ * so the whole surface (canvas, cards, custom chrome) stays coherent
+ * with the Gradio components living inside it.
+ * ------------------------------------------------------------------ */
+.gradio-container {
+    --d2a-ink: #101828;
+    --d2a-muted: #5a6b85;
+    --d2a-line: #e4e9f2;
     --d2a-panel: #ffffff;
-    --d2a-canvas: #f3f6fb;
-    --d2a-brand: #4f46e5;
-    --d2a-brand-dark: #3730a3;
-    --d2a-accent: #06b6d4;
+    --d2a-panel-2: #f6f8fc;
+    --d2a-canvas: #eef1f8;
+    --d2a-brand: #5b53f0;
+    --d2a-brand-2: #8b5cf6;
+    --d2a-brand-ink: #4338ca;
+    --d2a-brand-soft: #eef0ff;
+    --d2a-brand-line: #d6d8fb;
+    --d2a-shadow: 0 18px 44px rgba(16, 24, 40, 0.09);
+    --d2a-shadow-sm: 0 4px 14px rgba(16, 24, 40, 0.06);
+}
+
+.dark .gradio-container {
+    --d2a-ink: #e8edf6;
+    --d2a-muted: #97a4bb;
+    --d2a-line: #26314a;
+    --d2a-panel: #151c2c;
+    --d2a-panel-2: #101728;
+    --d2a-canvas: #0a0f1a;
+    --d2a-brand: #7c78ff;
+    --d2a-brand-2: #a78bfa;
+    --d2a-brand-ink: #c7c9ff;
+    --d2a-brand-soft: rgba(124, 120, 255, 0.13);
+    --d2a-brand-line: rgba(124, 120, 255, 0.32);
+    --d2a-shadow: 0 20px 50px rgba(0, 0, 0, 0.42);
+    --d2a-shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.32);
 }
 
 .gradio-container {
@@ -66,35 +100,34 @@ APP_CSS = """
 }
 
 #app-shell {
-    width: min(1240px, calc(100% - 40px));
+    width: min(1200px, calc(100% - 40px));
     margin: 0 auto;
-    padding: 28px 0 36px;
+    padding: 30px 0 40px;
 }
 
+/* -------------------------------- Hero -------------------------------- */
 .app-hero {
     position: relative;
     overflow: hidden;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 32px;
+    gap: 36px;
     align-items: end;
-    padding: 42px 46px;
+    padding: 46px 48px;
     color: #f8fafc;
-    background: #111827;
-    border: 1px solid #1e293b;
-    border-radius: 24px;
-    box-shadow: 0 22px 60px rgba(15, 23, 42, 0.18);
+    background:
+        radial-gradient(1100px 340px at 88% -30%, rgba(167, 139, 250, 0.55), transparent 60%),
+        linear-gradient(135deg, #4f46e5 0%, #6d28d9 48%, #1e1b4b 100%);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 22px;
+    box-shadow: 0 26px 60px rgba(49, 46, 129, 0.32);
 }
 
 .app-hero::after {
     content: "";
     position: absolute;
-    width: 260px;
-    height: 260px;
-    right: -92px;
-    top: -126px;
-    border: 54px solid rgba(6, 182, 212, 0.13);
-    border-radius: 50%;
+    inset: 0;
+    background: radial-gradient(520px 260px at 12% 130%, rgba(139, 92, 246, 0.35), transparent 70%);
     pointer-events: none;
 }
 
@@ -102,45 +135,52 @@ APP_CSS = """
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 28px;
+    margin-bottom: 26px;
 }
 
 .brand-mark {
     display: grid;
-    width: 38px;
-    height: 38px;
+    width: 40px;
+    height: 40px;
     place-items: center;
-    background: var(--d2a-brand);
-    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 11px;
     color: white;
     font-weight: 800;
+    font-size: 18px;
     letter-spacing: -0.04em;
+    backdrop-filter: blur(6px);
 }
 
 .brand-name {
-    color: #e2e8f0;
-    font-size: 14px;
+    color: #e9e7ff;
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
 }
 
 .app-hero h1 {
-    max-width: 760px;
+    position: relative;
+    z-index: 1;
+    max-width: 720px;
     margin: 0;
     color: white;
-    font-size: clamp(34px, 5vw, 56px);
-    font-weight: 760;
-    letter-spacing: -0.045em;
-    line-height: 1.02;
+    font-size: clamp(32px, 4.4vw, 50px);
+    font-weight: 780;
+    letter-spacing: -0.03em;
+    line-height: 1.06;
 }
 
 .app-hero p {
-    max-width: 690px;
-    margin: 20px 0 0;
-    color: #aebbd0;
-    font-size: 17px;
-    line-height: 1.65;
+    position: relative;
+    z-index: 1;
+    max-width: 620px;
+    margin: 18px 0 0;
+    color: #d6d3f5;
+    font-size: 16px;
+    line-height: 1.6;
 }
 
 .hero-meta {
@@ -148,49 +188,57 @@ APP_CSS = """
     z-index: 1;
     display: grid;
     gap: 10px;
-    min-width: 190px;
+    min-width: 210px;
 }
 
 .hero-meta-item {
-    padding: 13px 15px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 13px 16px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 12px;
+    backdrop-filter: blur(6px);
 }
 
 .hero-meta-item strong {
     display: block;
     color: white;
-    font-size: 14px;
+    font-size: 13.5px;
+    font-weight: 700;
 }
 
 .hero-meta-item span {
-    color: #94a3b8;
+    color: #c3c0e8;
     font-size: 12px;
 }
 
+/* ----------------------------- Workspace ----------------------------- */
 .workspace-grid {
-    gap: 24px !important;
+    gap: 22px !important;
     align-items: flex-start !important;
-    margin-top: 24px;
+    margin-top: 22px;
 }
 
 .surface-card {
     background: var(--d2a-panel) !important;
     border: 1px solid var(--d2a-line) !important;
-    border-radius: 20px !important;
-    box-shadow: 0 12px 34px rgba(15, 23, 42, 0.07) !important;
+    border-radius: 18px !important;
+    box-shadow: var(--d2a-shadow) !important;
     padding: 26px !important;
 }
 
 .section-heading {
-    margin-bottom: 22px;
+    margin-bottom: 20px;
 }
 
 .section-kicker {
-    margin-bottom: 6px;
-    color: var(--d2a-brand);
-    font-size: 12px;
+    display: inline-block;
+    margin-bottom: 8px;
+    padding: 3px 10px;
+    color: var(--d2a-brand-ink);
+    background: var(--d2a-brand-soft);
+    border: 1px solid var(--d2a-brand-line);
+    border-radius: 999px;
+    font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -199,12 +247,13 @@ APP_CSS = """
 .section-heading h2 {
     margin: 0;
     color: var(--d2a-ink);
-    font-size: 24px;
-    letter-spacing: -0.025em;
+    font-size: 23px;
+    font-weight: 750;
+    letter-spacing: -0.02em;
 }
 
 .section-heading p {
-    margin: 7px 0 0;
+    margin: 8px 0 0;
     color: var(--d2a-muted);
     font-size: 14px;
     line-height: 1.55;
@@ -213,43 +262,54 @@ APP_CSS = """
 .step-label {
     display: flex;
     align-items: center;
-    gap: 9px;
-    margin: 23px 0 11px;
-    color: #334155;
+    gap: 10px;
+    margin: 24px 0 12px;
+    color: var(--d2a-ink);
     font-size: 13px;
-    font-weight: 750;
+    font-weight: 700;
+    letter-spacing: -0.005em;
 }
 
 .step-number {
     display: grid;
-    width: 24px;
-    height: 24px;
+    width: 25px;
+    height: 25px;
     place-items: center;
-    background: #eef2ff;
-    border: 1px solid #c7d2fe;
-    border-radius: 7px;
-    color: var(--d2a-brand-dark);
+    background: var(--d2a-brand-soft);
+    border: 1px solid var(--d2a-brand-line);
+    border-radius: 8px;
+    color: var(--d2a-brand-ink);
     font-size: 12px;
+    font-weight: 800;
 }
 
 .upload-zone {
-    border: 1px dashed #a5b4fc !important;
+    border: 1.5px dashed var(--d2a-brand-line) !important;
     border-radius: 14px !important;
-    background: #f8faff !important;
+    background: var(--d2a-panel-2) !important;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.upload-zone:hover {
+    border-color: var(--d2a-brand) !important;
 }
 
 .provider-note {
     margin-top: 10px !important;
-    padding: 13px 15px !important;
-    background: #f8fafc !important;
-    border: 1px solid #e2e8f0 !important;
+    padding: 13px 16px !important;
+    background: var(--d2a-panel-2) !important;
+    border: 1px solid var(--d2a-line) !important;
     border-radius: 12px !important;
-    color: #475569 !important;
+    color: var(--d2a-muted) !important;
     font-size: 13px !important;
 }
 
 .provider-note p {
     margin: 0 0 5px !important;
+}
+
+.provider-note strong {
+    color: var(--d2a-ink) !important;
 }
 
 .voice-row,
@@ -264,10 +324,10 @@ APP_CSS = """
 
 .tuning-panel,
 .advanced-panel {
-    margin-top: 18px !important;
-    border: 1px solid #e2e8f0 !important;
+    margin-top: 16px !important;
+    border: 1px solid var(--d2a-line) !important;
     border-radius: 14px !important;
-    background: #fbfcfe !important;
+    background: var(--d2a-panel-2) !important;
 }
 
 .format-switch label {
@@ -281,66 +341,77 @@ APP_CSS = """
 }
 
 .generate-button {
-    min-height: 50px !important;
+    min-height: 52px !important;
     margin-top: 22px !important;
-    border: 1px solid var(--d2a-brand-dark) !important;
-    border-radius: 12px !important;
-    background: var(--d2a-brand) !important;
-    box-shadow: 0 10px 22px rgba(79, 70, 229, 0.22) !important;
+    border: none !important;
+    border-radius: 13px !important;
+    background: linear-gradient(135deg, var(--d2a-brand), var(--d2a-brand-2)) !important;
+    box-shadow: 0 12px 26px rgba(91, 83, 240, 0.32) !important;
+    color: #ffffff !important;
     font-size: 15px !important;
     font-weight: 750 !important;
+    letter-spacing: 0.01em;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 
 .generate-button:hover {
-    background: var(--d2a-brand-dark) !important;
+    filter: brightness(1.06);
+    box-shadow: 0 16px 32px rgba(91, 83, 240, 0.40) !important;
     transform: translateY(-1px);
+}
+
+.generate-button:active {
+    transform: translateY(0);
 }
 
 .preview-button,
 .reset-button {
-    border-radius: 10px !important;
+    border-radius: 11px !important;
     font-weight: 700 !important;
 }
 
+/* ------------------------------ Output ------------------------------ */
 .result-card {
     min-height: 560px;
 }
 
 .empty-result {
     display: grid;
-    min-height: 190px;
+    min-height: 200px;
     margin: 10px 0 18px;
-    padding: 30px;
+    padding: 32px;
     place-items: center;
     text-align: center;
-    background: #f8fafc;
-    border: 1px dashed #cbd5e1;
+    background: var(--d2a-panel-2);
+    border: 1.5px dashed var(--d2a-line);
     border-radius: 16px;
 }
 
 .empty-result-icon {
     display: grid;
-    width: 52px;
-    height: 52px;
-    margin: 0 auto 14px;
+    width: 54px;
+    height: 54px;
+    margin: 0 auto 15px;
     place-items: center;
-    color: var(--d2a-brand);
-    background: #eef2ff;
-    border-radius: 14px;
-    font-size: 22px;
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--d2a-brand), var(--d2a-brand-2));
+    box-shadow: 0 10px 22px rgba(91, 83, 240, 0.30);
+    border-radius: 15px;
+    font-size: 24px;
     font-weight: 800;
 }
 
 .empty-result strong {
     display: block;
-    color: #334155;
+    color: var(--d2a-ink);
     font-size: 15px;
+    font-weight: 700;
 }
 
 .empty-result span {
     display: block;
     max-width: 320px;
-    margin-top: 7px;
+    margin-top: 8px;
     color: var(--d2a-muted);
     font-size: 13px;
     line-height: 1.5;
@@ -352,9 +423,9 @@ APP_CSS = """
 
 .result-status {
     margin-top: 16px !important;
-    padding: 16px 18px !important;
-    background: #f8fafc !important;
-    border: 1px solid #e2e8f0 !important;
+    padding: 4px 18px !important;
+    background: var(--d2a-panel-2) !important;
+    border: 1px solid var(--d2a-line) !important;
     border-radius: 14px !important;
 }
 
@@ -366,16 +437,17 @@ APP_CSS = """
 }
 
 .benefit-item {
-    padding: 15px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    padding: 16px;
+    background: var(--d2a-panel-2);
+    border: 1px solid var(--d2a-line);
     border-radius: 13px;
 }
 
 .benefit-item strong {
     display: block;
-    color: #334155;
+    color: var(--d2a-ink);
     font-size: 13px;
+    font-weight: 700;
 }
 
 .benefit-item span {
@@ -390,21 +462,22 @@ APP_CSS = """
     display: flex;
     justify-content: space-between;
     gap: 20px;
-    margin-top: 18px;
-    padding: 0 4px;
-    color: #7c8ba1;
+    margin-top: 20px;
+    padding: 0 6px;
+    color: var(--d2a-muted);
     font-size: 12px;
 }
 
+/* --------------------------- Responsive ---------------------------- */
 @media (max-width: 900px) {
     #app-shell {
         width: min(100% - 24px, 720px);
-        padding-top: 12px;
+        padding-top: 14px;
     }
 
     .app-hero {
         grid-template-columns: 1fr;
-        padding: 30px 26px;
+        padding: 32px 26px;
         border-radius: 18px;
     }
 
@@ -429,7 +502,7 @@ APP_CSS = """
     }
 
     .app-hero h1 {
-        font-size: 34px;
+        font-size: 32px;
     }
 
     .hero-meta,
@@ -633,7 +706,7 @@ def preview_voice(provider_id: str, voice_label: str, rate: int, pitch: int):
             SAMPLE_TEXT, short, _pct(rate), pitch_s, tmp, provider=prov))
     except Exception as exc:  # noqa: BLE001
         raise gr.Error(f"Preview failed: {exc}")
-    return str(tmp)
+    return gr.update(value=str(tmp), visible=True)
 
 
 def reset_defaults():
@@ -701,7 +774,12 @@ def generate(document, provider_id, voice_label, rate, pitch, fmt, rules_text,
         f"&nbsp;•&nbsp; **Chunks:** {result.n_chunks}  &nbsp;•&nbsp; **Chars:** {result.total_chars:,}\n"
         f"- **Saved to:** `{result.output}`"
     )
-    return str(result.output), str(result.output), status, gr.update(visible=False)
+    return (
+        gr.update(value=str(result.output), visible=True),   # result_audio
+        gr.update(value=str(result.output), visible=True),   # download
+        gr.update(value=status, visible=True),               # status
+        gr.update(visible=False),                            # result_empty
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -794,6 +872,7 @@ def build_ui() -> gr.Blocks:
                             label="Voice preview",
                             type="filepath",
                             interactive=False,
+                            visible=False,
                             elem_classes=["compact-audio"],
                         )
 
@@ -879,10 +958,11 @@ def build_ui() -> gr.Blocks:
                             label="Audiobook player",
                             type="filepath",
                             interactive=False,
+                            visible=False,
                             elem_classes=["result-audio"],
                         )
-                        download = gr.File(label="Download audiobook")
-                        status = gr.Markdown(elem_classes=["result-status"])
+                        download = gr.File(label="Download audiobook", visible=False)
+                        status = gr.Markdown(visible=False, elem_classes=["result-status"])
                         gr.HTML(
                             """
                             <div class="benefit-grid">
