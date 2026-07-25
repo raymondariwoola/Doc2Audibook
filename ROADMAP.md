@@ -183,7 +183,9 @@ This phase is **additive**: it does not retire the CLI or the Gradio prototype.
       inline player and download; failed ones surface their error; survives
       restarts via the reloaded job store.
 - [ ] Complete real-provider end-to-end acceptance across supported operating
-      systems before declaring Phase 3 done.
+      systems before declaring Phase 3 done. **Windows: edge, Piper, and Kokoro
+      all verified end-to-end** (extract → synthesize → assemble → valid MP3).
+      Pending: macOS (`apple`), Linux, and a real-key `openai` pass.
 
 ---
 
@@ -371,3 +373,11 @@ Record notable choices here so future-us remembers the *why*.
   ffmpeg assemble → MP3 with duration/size — progress toward the open "real-provider
   end-to-end acceptance" item. R-015 stays *controlled* (ffmpeg is still an external
   dependency; other machines must have it on PATH).
+- **2026-07-25** — Verified the **offline providers end-to-end on Windows**. With
+  the downloaded models (`en_US-lessac-medium` for Piper, `kokoro-v1.0` for
+  Kokoro) and ffmpeg on PATH, real jobs completed for both: extract → local
+  synthesis (WAV) → per-chunk MP3 transcode → ffmpeg assembly → valid MP3
+  (Piper 22 kHz mono ~5.6 s; Kokoro 24 kHz mono ~6.3 s, both confirmed with
+  ffprobe), no warnings logged. Together with the earlier edge pass, all three
+  providers available on this machine (edge, Piper, Kokoro) are now verified
+  end-to-end on Windows; macOS `apple`, Linux, and a real-key `openai` run remain.
