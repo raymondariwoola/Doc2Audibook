@@ -303,6 +303,45 @@ main {
   background: rgba(124, 47, 36, 0.08);
 }
 
+.notice-banner {
+  display: flex;
+  max-width: 920px;
+  align-items: flex-start;
+  gap: 11px;
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #ecc98f;
+  border-radius: 12px;
+  color: #7a531c;
+  background: #fdf3e0;
+}
+
+.notice-banner > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #b7791f;
+}
+
+.notice-banner strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 13.5px;
+  font-weight: 720;
+}
+
+.notice-banner span {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.notice-banner code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(122, 83, 28, 0.12);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .studio-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr);

@@ -123,6 +123,12 @@ pip install -e ".[ui,web,local]"    # + both UIs + offline providers
 
 Verify with `ffmpeg -version`.
 
+> **Just installed ffmpeg?** Open a **new** terminal (and restart your editor so
+> its integrated terminal reloads `PATH`) before launching the app — an existing
+> shell keeps its old `PATH` and won't see ffmpeg. The web app detects this and
+> shows a warning banner; without ffmpeg, audiobook assembly and the offline
+> (Piper/Kokoro) previews fail while Edge previews still work.
+
 ---
 
 ## Phase 3 local web app

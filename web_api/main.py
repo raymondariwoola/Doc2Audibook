@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
@@ -103,6 +104,25 @@ def _rate(value: int) -> str:
 
 def _pitch(value: int) -> str:
     return f"{value:+d}Hz"
+
+
+def _synthesis_failure_detail(exc: Exception, *, action: str) -> str:
+    """Turn a synthesis exception into a sanitized, actionable client message.
+
+    Local providers (Piper/Kokoro) transcode to MP3 with ffmpeg, so a missing
+    ffmpeg is the most common non-obvious failure — surface it specifically
+    instead of a generic error. ``action`` is a short verb phrase, e.g.
+    "create the preview" or "generate the audiobook".
+    """
+    if "ffmpeg" in str(exc).lower():
+        if shutil.which("ffmpeg") is None:
+            return (
+                "This voice needs ffmpeg to produce audio, but ffmpeg was not found "
+                "on PATH. Install it (see the README), then restart the app from a "
+                "terminal where `ffmpeg -version` works."
+            )
+        return f"Audio encoding failed while trying to {action}. Check the ffmpeg install and try again."
+    return f"Could not {action}. Check that the selected provider and voice are available, then try again."
 
 
 def _safe_stem(filename: str) -> str:
@@ -594,17 +614,15 @@ async def _run_job(app: FastAPI, job_id: str) -> None:
             error="The server stopped before this job completed.",
         )
         raise
-    except Exception:  # noqa: BLE001 - surfaced as sanitized job state
+    except Exception as exc:  # noqa: BLE001 - surfaced as sanitized job state
         logger.exception("Audiobook job %s failed", job_id)
+        detail = _synthesis_failure_detail(exc, action="generate the audiobook")
         store.update(
             job_id,
             status="failed",
             stage="failed",
             message="Generation failed",
-            error=(
-                "Audio generation failed. Check the selected provider and ffmpeg, "
-                "then retry; resumable chunks were kept."
-            ),
+            error=f"{detail} Resumable chunks were kept, so a retry resumes.",
         )
 
 
@@ -679,11 +697,14 @@ def create_app(
 
     @api.get("/health", include_in_schema=False)
     @api.get("/api/health", tags=["system"])
-    async def health() -> dict[str, str]:
+    async def health() -> dict[str, Any]:
+        # ffmpeg assembles every audiobook and transcodes the offline providers'
+        # previews; report it so the UI can warn before a job or preview fails.
         return {
             "status": "ok",
             "service": "doc2audiobook",
             "version": SERVICE_VERSION,
+            "ffmpeg": shutil.which("ffmpeg") is not None,
         }
 
     @api.get("/providers", include_in_schema=False)
@@ -825,10 +846,7 @@ def create_app(
                     )
                     raise HTTPException(
                         status_code=502,
-                        detail=(
-                            "Voice preview failed. Check that the selected provider "
-                            "and voice are available, then try again."
-                        ),
+                        detail=_synthesis_failure_detail(exc, action="create the preview"),
                     ) from exc
         return {
             "audio_url": f"/api/preview/file/{digest}.mp3",

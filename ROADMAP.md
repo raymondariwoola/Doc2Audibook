@@ -381,3 +381,13 @@ Record notable choices here so future-us remembers the *why*.
   ffprobe), no warnings logged. Together with the earlier edge pass, all three
   providers available on this machine (edge, Piper, Kokoro) are now verified
   end-to-end on Windows; macOS `apple`, Linux, and a real-key `openai` run remain.
+- **2026-07-25** — Made a missing ffmpeg obvious instead of a mystery 502. Root
+  cause of "Piper/Kokoro won't preview" was a server launched from a terminal with
+  a stale PATH (ffmpeg installed but not visible); edge previews worked, hiding it.
+  Now: `GET /api/health` reports `ffmpeg` availability and the web app shows a
+  warning banner when it is missing ("required to assemble audiobooks and preview
+  the offline voices… restart from a terminal where `ffmpeg -version` works; Edge
+  previews still work"); preview and job failures also name ffmpeg specifically
+  (via a shared `_synthesis_failure_detail`) rather than a generic error, without
+  leaking internals. Screenshot-verified; +2 backend tests, full suite green (44),
+  `vite build` clean. R-015 stays controlled but is now self-diagnosing.

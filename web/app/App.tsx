@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AlertTriangle,
   AudioLines,
   BookOpenText,
   Check,
@@ -270,6 +271,7 @@ function normalizeProgress(progress?: number): number {
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [connection, setConnection] = useState<ConnectionState>("checking");
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -330,6 +332,10 @@ export default function App() {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error("The narration engine is unavailable.");
+      const data = (await response.json().catch(() => null)) as {
+        ffmpeg?: boolean;
+      } | null;
+      setFfmpegAvailable(typeof data?.ffmpeg === "boolean" ? data.ffmpeg : null);
       setConnection("ready");
     } catch {
       setConnection("offline");
@@ -758,6 +764,21 @@ export default function App() {
             <button type="button" onClick={() => setError("")} aria-label="Dismiss">
               <X size={17} aria-hidden="true" />
             </button>
+          </div>
+        )}
+
+        {ffmpegAvailable === false && (
+          <div className="notice-banner" role="status">
+            <AlertTriangle size={19} aria-hidden="true" />
+            <div>
+              <strong>ffmpeg not detected</strong>
+              <span>
+                ffmpeg is required to assemble audiobooks and to preview the
+                offline voices (Piper &amp; Kokoro). Install it, then restart the
+                app from a terminal where <code>ffmpeg -version</code> works.
+                Microsoft Edge previews still work without it.
+              </span>
+            </div>
           </div>
         )}
 

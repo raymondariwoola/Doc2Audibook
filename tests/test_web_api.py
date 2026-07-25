@@ -110,6 +110,8 @@ class WebApiTests(unittest.TestCase):
         health = self.client.get("/api/health")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["status"], "ok")
+        # ffmpeg availability is reported so the UI can warn before a job fails.
+        self.assertIsInstance(health.json()["ffmpeg"], bool)
 
         provider_response = self.client.get("/api/providers")
         self.assertEqual(provider_response.status_code, 200)
@@ -190,6 +192,36 @@ class WebApiTests(unittest.TestCase):
             json={"provider": "dummy", "voice": "en-test-one", "text": "Hello world"},
         )
         self.assertEqual([mark["text"] for mark in cached.json()["marks"]], ["Hello", "world"])
+
+    def test_health_reports_missing_ffmpeg(self):
+        with mock.patch("web_api.main.shutil.which", return_value=None):
+            body = self.client.get("/api/health").json()
+        self.assertFalse(body["ffmpeg"])
+
+    def test_synthesis_failure_detail_flags_missing_ffmpeg(self):
+        from web_api.main import _synthesis_failure_detail
+
+        with mock.patch("web_api.main.shutil.which", return_value=None):
+            missing = _synthesis_failure_detail(
+                RuntimeError("ffmpeg is required to encode local-provider audio"),
+                action="create the preview",
+            )
+        self.assertIn("ffmpeg", missing.lower())
+        self.assertIn("PATH", missing)
+
+        with mock.patch("web_api.main.shutil.which", return_value="/usr/bin/ffmpeg"):
+            broken = _synthesis_failure_detail(
+                RuntimeError("ffmpeg failed encoding audio"),
+                action="create the preview",
+            )
+        self.assertIn("encoding failed", broken.lower())
+
+        # Non-ffmpeg failures stay generic and never leak the exception text.
+        generic = _synthesis_failure_detail(
+            RuntimeError("boom at C:/secret/path"), action="generate the audiobook"
+        )
+        self.assertIn("selected provider", generic)
+        self.assertNotIn("secret", generic)
 
     def test_preview_file_route_rejects_path_traversal(self):
         for name in ["../secret.mp3", "not-a-digest.mp3", "%2e%2e/x.mp3"]:
@@ -341,7 +373,7 @@ class WebApiTests(unittest.TestCase):
             job_id = created.json()["id"]
             terminal = self._wait_for_terminal(job_id)
         self.assertEqual(terminal["status"], "failed")
-        self.assertIn("Check the selected provider and ffmpeg", terminal["error"])
+        self.assertIn("Resumable chunks were kept", terminal["error"])
         self.assertNotIn(secret_path, json.dumps(terminal))
         self.assertIn(secret_path, "\n".join(logs.output))
         output = self.client.get(f"/api/jobs/{job_id}/output")
