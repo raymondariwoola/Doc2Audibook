@@ -17,9 +17,13 @@ strictly separated (interfaces depend on the engine, never the reverse):
   (`list_voices`, `synthesize`, `capabilities`, `is_available`) with a registry.
   `edge` is the default. Never break existing `narrate` signatures — the CLI and
   UI depend on them.
-- **Interfaces** — [`narrate.py`](narrate.py) CLI and the Gradio UI
-  [`app.py`](app.py). The long-term plan (web app, desktop) is in
-  [`ROADMAP.md`](ROADMAP.md) — read it before large changes and update it as you go.
+- **Interfaces** — [`narrate.py`](narrate.py) CLI, retained Gradio prototype
+  [`app.py`](app.py), and Phase 3 FastAPI + React app in [`web_api/`](web_api/)
+  and [`web/`](web/). These are additive clients of the same engine; never make
+  one interface import another. The long-term plan is in
+  [`ROADMAP.md`](ROADMAP.md); active limitations and remediations are in
+  [`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md). Read both
+  before large changes and update them as you go.
 
 ## ⭐ Switching machines / fresh clone — the ONE command
 
@@ -31,8 +35,9 @@ python bootstrap.py
 ```
 
 Idempotent; safe to re-run after every `git pull`. It: creates `.venv`, installs
-pinned deps (core + UI + local providers), checks `ffmpeg` (prints install hints
-if missing), and downloads the offline voice models in
+pinned deps (core + Gradio + FastAPI + local providers), installs/builds the
+React client when Node.js is available, checks `ffmpeg` (prints install hints if
+missing), and downloads the offline voice models in
 [`voices.manifest.json`](voices.manifest.json) via [`sync_voices.py`](sync_voices.py),
 verifying every model against its recorded SHA-256 digest. It also repairs an
 interrupted `.venv` whose Python exists but whose pip installation is incomplete.
@@ -44,6 +49,7 @@ Works on macOS/Windows/Linux (pure-stdlib bootstrap, cross-platform venv paths).
 |---|---|
 | All code, `ROADMAP.md`, this file, `voices.manifest.json` | `.venv/` (rebuilt by bootstrap) |
 | Which voices you use (the manifest) | `piper_voices/`, `kokoro_models/` (re-downloaded by bootstrap) |
+| | `web/node_modules/`, `web/dist/` (rebuilt by bootstrap) |
 | | `outputs/`, `*_chunks/`, `.narrate_cache/` (regenerated on demand) |
 
 So "pick up where we left off" = code/roadmap via git + `python bootstrap.py` to
@@ -68,16 +74,24 @@ Providers advertise `capabilities()` (rate/pitch support, needs_api_key). The UI
 and CLI adapt to these — e.g. the pitch control disables where unsupported. Add a
 provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
 
-## Running the prototype
+## Running the interfaces
+
+Phase 3 is not a replacement for the prototype. Keep both launch paths working:
 
 ```bash
 .venv/bin/python app.py          # serves the Gradio UI at http://127.0.0.1:7860
+.venv/bin/python -m web_api      # serves React + FastAPI at http://127.0.0.1:8000
 ```
 
 If 7860 is taken it falls back to 7861, 7862, … — check the console line or
 `netstat`/`lsof` for the actual port. Theme and CSS are passed to `launch()`, so a
 running instance will **not** hot-reload style changes; restart it to see them.
 The UI is **theme-aware** — verify both light and dark after any styling change.
+
+For React development, run `npm run dev` from `web/`; Vite listens only on
+`127.0.0.1:5173` and proxies `/api` to port 8000. `npm run build` writes
+`web/dist/`, which `web_api` serves on port 8000. The API launcher rejects
+non-loopback hosts. Keep web jobs/cache isolated from Gradio runtime state.
 
 **Screenshot-verify the UI (headless).** Playwright + Chromium are installed in
 the `.venv` for this. Launch the app, then drive a headless browser against it,
@@ -92,7 +106,9 @@ clash was caught.
   `.venv/bin/python …` (macOS/Linux) or `.venv\Scripts\python …` (Windows).
 - **Don't disrupt working layers.** Changes to providers must keep `edge` the
   default and preserve `narrate`'s public function signatures. Verify the CLI and
-  the `app.py` callbacks still work after provider changes.
+  the `app.py` callbacks still work after provider or Phase 3 changes.
+- **Keep the prototype.** Do not delete, rename, redirect, or silently deprecate
+  `app.py`/`narrate-ui` when extending the React interface.
 - **Never commit** `.venv/`, voice models, or generated audio (see `.gitignore`).
 - **Dev-only tooling:** Playwright + headless Chromium live in the `.venv` for
   screenshot-verifying the UI (see *Running the prototype*). They are a local dev
@@ -112,8 +128,9 @@ clash was caught.
 ## Quick test commands
 
 ```bash
-.venv/bin/python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py
+.venv/bin/python -m py_compile narrate.py providers.py app.py sync_voices.py bootstrap.py web_api/*.py
 .venv/bin/python -m unittest discover -s tests -v
+cd web && npm test
 .venv/bin/python narrate.py --list-voices en-US
 .venv/bin/python narrate.py sample.docx --provider piper --voice en_US-lessac-medium
 .venv/bin/python -c "import providers as P; print([p.id for p in P.available_providers()])"

@@ -1,0 +1,23 @@
+:root {
+  --ink: #222622;
+  --ink-muted: #656962;
+  --ink-faint: #8d9089;
+  --paper: #ffffff;
+  --paper-soft: #faf9f6;
+  --line: #deddd7;
+  --line-strong: #bbbcb5;
+  --accent: #bd431f;
+  --accent-soft: #fff0e9;
+  --success: #39704a;
+  --success-soft: #e8f3ea;
+  --danger: #9d3e2e;
+  --radius-lg: 15px;
+  --radius-xl: 20px;
+  --shadow-soft: 0 10px 36px rgba(42, 38, 31, 0.055);
+  --font-sans:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-display:
+    Iowan Old Style, Baskerville, "Times New Roman", ui-serif, serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}

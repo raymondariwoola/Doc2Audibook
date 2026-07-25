@@ -16,6 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["gradio==6.20.0"]
+web = [
+    "fastapi==0.139.2",
+    "uvicorn==0.51.0",
+    "python-multipart==0.0.32",
+]
 # Free, fully-offline local providers (Piper + Kokoro):
 local = ["piper-tts==1.6.0", "kokoro-onnx==0.4.7", "soundfile==0.14.0"]
 openai = ["openai==2.46.0"]       # paid provider (experimental)
@@ -23,6 +28,10 @@ openai = ["openai==2.46.0"]       # paid provider (experimental)
 [project.scripts]
 narrate = "narrate:main"
 narrate-ui = "app:main"
+narrate-web = "web_api.__main__:main"
 
 [tool.setuptools]
 py-modules = ["narrate", "providers", "app"]
+
+[tool.setuptools.packages.find]
+include = ["web_api*"]

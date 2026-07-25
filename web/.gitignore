@@ -1,0 +1,17 @@
+# Frontend dependencies and build output
+/node_modules/
+/dist/
+
+# Local Vite/tool state
+/coverage/
+/.vite/
+
+# Local environment files (browser-visible VITE_* values are not secrets)
+.env*
+
+# Package-manager and platform noise
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.DS_Store

@@ -9,14 +9,18 @@ Piper and Kokoro provide fully offline alternatives.
 `say`/`espeak` kind), the pipeline is **resumable** if it's interrupted, and the
 final audio is stitched together losslessly with `ffmpeg`.
 
-Two ways to use it:
+Three supported ways to use it:
 
 - **CLI** — `narrate mydoc.docx` (scriptable, resumable, batteries-included).
-- **Browser UI** — `python app.py` opens a local app to attach a document,
-  **preview a voice before committing**, tune pitch & pace, and export MP3/M4A/WAV.
+- **Gradio prototype** — `python app.py` opens the original browser UI.
+- **Phase 3 web app** — `python -m web_api` serves the React UI and FastAPI API
+  together at `http://127.0.0.1:8000`.
 
-See [`ROADMAP.md`](ROADMAP.md) for the planned paid providers, full local web
-app, and native macOS/Windows desktop builds.
+Both browser interfaces remain available and reuse the same engine/provider
+layers. The Phase 3 app does not replace or redirect the prototype.
+
+See [`ROADMAP.md`](ROADMAP.md) for progress on paid providers, the local web app,
+and native macOS/Windows desktop builds.
 
 ---
 
@@ -29,16 +33,19 @@ same command you run when you move to another machine or clone fresh:
 python bootstrap.py
 ```
 
-It creates or repairs `.venv`, installs the pinned direct dependencies, checks
-for `ffmpeg` (with install hints if missing), and downloads the offline voice
-models listed in [`voices.manifest.json`](voices.manifest.json). Every model is
-verified against its recorded SHA-256 digest. The command is **idempotent** —
-re-run it after every `git pull` to stay in lockstep.
+It creates or repairs `.venv`, installs the pinned Python dependencies, installs
+and builds the React client when Node.js 22.13+ is available, checks for
+`ffmpeg` (with install hints if missing), and downloads the offline voice models
+listed in [`voices.manifest.json`](voices.manifest.json). Every model is verified
+against its recorded SHA-256 digest. The command is **idempotent** — re-run it
+after every `git pull` to stay in lockstep. Use `--no-web` to skip Phase 3, or
+`--minimal` for the core CLI only.
 
 **What syncs across machines:** all code, the roadmap, and *which* voices you use
-(the manifest) travel via git. The large bits — the `.venv`, the voice model
-files, generated audio, and the resumable chunk cache — are gitignored and
-rebuilt/re-fetched locally by `bootstrap.py`. So on a new machine: `git pull`
+(the manifest) travel via git. The large bits — `.venv`, `web/node_modules`,
+the built web client, voice model files, generated audio, and the resumable
+chunk cache — are gitignored and rebuilt/re-fetched locally by `bootstrap.py`.
+So on a new machine: `git pull`
 → `python bootstrap.py` → you're back where you left off. To add a voice for all
 machines, edit `voices.manifest.json`, commit, and run `python sync_voices.py`
 on each. AI agents working in this repo should read
@@ -90,15 +97,17 @@ itself remains compatible with Python 3.9).
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt                 # core CLI (edge-tts online)
-pip install -r requirements-ui.txt              # optional: browser UI
+pip install -r requirements-ui.txt              # optional: Gradio prototype
+pip install -r requirements-web.txt             # optional: Phase 3 API
 pip install -r requirements-local.txt           # optional: offline Piper/Kokoro
+cd web && npm ci && npm run build               # Phase 3 React client
 ```
 
 Or install it as a command (`narrate`) on your PATH, with optional extras:
 
 ```bash
 pip install -e .                    # core
-pip install -e ".[ui,local]"        # + browser UI + offline providers
+pip install -e ".[ui,web,local]"    # + both UIs + offline providers
 ```
 
 ### 2. `ffmpeg` (external dependency — required)
@@ -116,10 +125,46 @@ Verify with `ffmpeg -version`.
 
 ---
 
-## Browser UI (Gradio prototype)
+## Phase 3 local web app
 
-A local web app over the same engine — nothing is uploaded anywhere; it runs on
-your machine.
+The React/Vite client and FastAPI backend are isolated in `web/` and `web_api/`.
+The production-style local command serves both from one loopback-only origin:
+
+```bash
+python bootstrap.py                 # first run, or after dependency changes
+.venv/bin/python -m web_api         # Windows: .venv\Scripts\python -m web_api
+# open http://127.0.0.1:8000
+```
+
+Use `--port 8010` if 8000 is already occupied. The launcher fails clearly
+rather than moving silently to another port.
+
+For frontend development, run the API and Vite in separate terminals. Vite
+proxies relative `/api` requests to the API, so API URLs stay environment-free:
+
+```bash
+.venv/bin/python -m web_api
+cd web
+npm run dev                         # http://127.0.0.1:5173
+```
+
+The web app keeps generated jobs and preview audio in dedicated machine-local
+subdirectories; the prototype continues to use its existing paths. The web
+server binds to `127.0.0.1` and rejects non-loopback hosts because it is not a
+public or multi-user service.
+
+“Local app” describes where the interface and files run. Edge and OpenAI still
+send narration text to their respective online TTS services; choose Piper,
+Kokoro, or Apple `say` when document content must stay offline.
+
+Current restart-recovery and SSE limitations are tracked in
+[`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md).
+
+## Gradio prototype (retained)
+
+The original prototype remains supported as a lightweight comparison and
+recovery interface. Nothing is uploaded to Doc2Audiobook; it runs on your
+machine and does not depend on the React client.
 
 ```bash
 pip install -r requirements-ui.txt      # adds gradio (CLI doesn't need it)
@@ -138,8 +183,8 @@ Renders land in `outputs/` with a short render digest in the filename, preventin
 same-stem uploads from overwriting different audiobooks. A chunk cache in
 `.narrate_cache/` is keyed by document content, provider/model, voice settings,
 chunk size, and replacement rules. This is **Phase 1** of the
-[roadmap](ROADMAP.md); the long-term UI is a FastAPI + React app and native
-desktop builds.
+[roadmap](ROADMAP.md). Phase 3 adds a richer FastAPI + React interface alongside
+it, and Phase 4 targets native desktop builds.
 
 ### Running & verifying the prototype (dev ops)
 

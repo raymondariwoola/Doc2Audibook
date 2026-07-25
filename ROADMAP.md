@@ -19,7 +19,7 @@ desktop app for macOS and Windows** — all running locally, not a public servic
 | **0. CLI engine** | ✅ Done | `narrate.py` — extract → clean → chunk → edge-tts → ffmpeg |
 | **1. Gradio prototype** | ✅ Done | `app.py` — browser UI to *feel* the product |
 | **2. Provider layer** | 🔨 In progress | Pluggable free + paid TTS engines (`providers.py`) |
-| **3. Local web app** | ⬜ Planned | FastAPI + React, runs on `localhost` |
+| **3. Local web app** | 🔨 In progress | FastAPI + React, runs on `localhost` |
 | **4. Native desktop** | ⬜ Planned | Packaged `.app` (macOS) + `.exe` (Windows) |
 | **5. Audiobook polish** | ⬜ Planned | M4B chapters, resume UX, library |
 
@@ -106,7 +106,8 @@ Goal: make the vision **tangible** fast, on top of the existing engine.
 **Known limits to revisit later**
 - edge-tts source audio is 24 kHz mono ~48 kbps — WAV/high-bitrate exports
   re-wrap the same audio; true fidelity needs a higher-quality provider (Phase 2).
-- Gradio gives limited layout control — fine for a prototype, replaced in Phase 3.
+- Gradio gives limited layout control, but remains available as the fast
+  prototype and regression reference after the richer Phase 3 UI ships.
 
 ---
 
@@ -154,16 +155,25 @@ edge-tts is the default provider and all existing signatures were preserved.
 
 ---
 
-## Phase 3 — Local web app ⬜
+## Phase 3 — Local web app 🔨
 
 Goal: the "functioning website, running locally" milestone. Real foundation.
+This phase is **additive**: it does not retire the CLI or the Gradio prototype.
 
-- [ ] **FastAPI** backend wrapping the engine.
-  - [ ] `GET /voices`, `POST /preview`, `POST /jobs`, `GET /jobs/{id}/events` (SSE progress).
-  - [ ] Background job queue; resumable jobs keyed by content + settings hash.
-- [ ] **React** frontend (Vite): drag-drop upload, voice cards with play buttons,
-      pitch/pace sliders, format picker, live progress, download/library.
-- [ ] One-command local launch (`localhost`), no public exposure.
+- [x] Define and document the CLI/Gradio/React coexistence boundary.
+- [x] **FastAPI** backend wrapping the engine.
+  - [x] Provider/voice discovery, preview, job creation/status, SSE progress,
+        and output download endpoints under `/api`.
+  - [x] Content-and-settings-addressed jobs with retained resumable chunks.
+- [x] **React** frontend (Vite): drag-drop upload, voice cards with play buttons,
+      pitch/pace sliders, format picker, live progress, and result download.
+- [x] One-command local launch on `127.0.0.1`, with no public binding by default.
+- [ ] Persist job metadata and recover interrupted queue state across server
+      restarts.
+- [ ] Add a durable local library/history view over persisted job metadata.
+- [ ] Add durable SSE event IDs/heartbeats and reconnect coverage.
+- [ ] Complete real-provider end-to-end acceptance across supported operating
+      systems before declaring Phase 3 done.
 
 ---
 
@@ -285,3 +295,11 @@ Record notable choices here so future-us remembers the *why*.
   styling and component `visible` flags changed — no callback or engine logic.
   Installed Playwright + headless Chromium in the venv to screenshot-verify the UI
   in both themes; kept as a reusable capability for future UI work.
+- **2026-07-25** — Started Phase 3 as an additive interface, not a replacement.
+  `app.py` remains the supported Gradio prototype on port 7860+, while the new
+  `web_api/` FastAPI adapter and `web/` React/Vite client run on
+  `127.0.0.1:8000` and reuse the unchanged engine/provider layers. Web runtime
+  files have their own storage namespace, local-provider work is serialized,
+  and the bootstrap now installs/builds both interfaces by default. Durable job
+  recovery and stronger SSE replay semantics remain explicitly open in
+  [`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md).

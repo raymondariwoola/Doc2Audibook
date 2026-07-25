@@ -6,19 +6,22 @@ One-command setup for Doc2Audiobook on any machine (macOS / Windows / Linux).
 
 What it does (idempotent — safe to re-run any time, e.g. after `git pull`):
   1. Creates a local virtual environment in .venv (if missing).
-  2. Installs pinned Python dependencies (core + UI + local providers).
-  3. Checks for ffmpeg and prints OS-specific install instructions if missing.
-  4. Downloads the offline voice models listed in voices.manifest.json
+  2. Installs pinned Python dependencies (core + both UIs + local providers).
+  3. Installs and builds the Phase 3 React frontend when Node.js is available.
+  4. Checks for ffmpeg and prints OS-specific install instructions if missing.
+  5. Downloads the offline voice models listed in voices.manifest.json
      (Piper + Kokoro) via sync_voices.py — skipping any already present.
 
 This is the command to run whenever you switch machines: pull the repo, run it,
 and you're on parity with wherever you left off (code + dependencies + voices).
 Generated audiobooks and the resumable chunk cache are machine-local and are NOT
-synced (they're gitignored and cheap to regenerate).
+synced. Frontend dependencies/build output are machine-local too; bootstrap
+recreates them from `web/package-lock.json`.
 
 Flags:
   --minimal     core CLI dependencies only (no UI, no local providers, no models)
   --no-ui       skip the Gradio UI dependency
+  --no-web      skip the FastAPI backend and React frontend
   --no-local    skip the offline local-provider packages (Piper/Kokoro)
   --no-voices   skip downloading voice models
 """
@@ -36,6 +39,7 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 PIP_VERSION = "26.1.2"
 SETUPTOOLS_VERSION = "83.0.0"
+MIN_NODE_VERSION = (22, 13, 0)
 
 
 def venv_python() -> Path:
@@ -52,7 +56,7 @@ def step(msg: str) -> None:
 
 
 def ensure_venv() -> None:
-    step("1/4  Virtual environment")
+    step("1/5  Virtual environment")
     if venv_python().exists():
         check = subprocess.run(
             [str(venv_python()), "-m", "pip", "--version"],
@@ -69,8 +73,13 @@ def ensure_venv() -> None:
     venv.EnvBuilder(with_pip=True, upgrade_deps=True).create(str(VENV))
 
 
-def install_deps(minimal: bool, no_ui: bool, no_local: bool) -> None:
-    step("2/4  Python dependencies")
+def install_deps(
+    minimal: bool,
+    no_ui: bool,
+    no_web: bool,
+    no_local: bool,
+) -> None:
+    step("2/5  Python dependencies")
     py = str(venv_python())
     run([py, "-m", "pip", "install", f"pip=={PIP_VERSION}"])
     run([py, "-m", "pip", "install", f"setuptools=={SETUPTOOLS_VERSION}"])
@@ -78,6 +87,8 @@ def install_deps(minimal: bool, no_ui: bool, no_local: bool) -> None:
     if not minimal:
         if not no_ui:
             req_files.append(ROOT / "requirements-ui.txt")
+        if not no_web:
+            req_files.append(ROOT / "requirements-web.txt")
         if not no_local:
             req_files.append(ROOT / "requirements-local.txt")
     args = [py, "-m", "pip", "install"]
@@ -86,8 +97,41 @@ def install_deps(minimal: bool, no_ui: bool, no_local: bool) -> None:
     run(args)
 
 
+def build_web_frontend(minimal: bool, no_web: bool) -> None:
+    step("3/5  Phase 3 web frontend")
+    if minimal or no_web:
+        print("  skipped (per flags)")
+        return
+
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if node is None or npm is None:
+        print("  [warning] Node.js/npm was not found; the Gradio prototype still works.")
+        print("  Install Node.js 22.13+ and re-run bootstrap to build the React app.")
+        return
+
+    raw_version = subprocess.check_output([node, "--version"], text=True).strip()
+    try:
+        node_version = tuple(
+            int(part) for part in raw_version.removeprefix("v").split(".")[:3]
+        )
+    except ValueError:
+        node_version = (0, 0, 0)
+    if node_version < MIN_NODE_VERSION:
+        print(
+            f"  [warning] Node.js {raw_version} is too old; "
+            "the Gradio prototype still works."
+        )
+        print("  Install Node.js 22.13+ and re-run bootstrap to build the React app.")
+        return
+
+    web_root = ROOT / "web"
+    run([npm, "ci"], cwd=web_root)
+    run([npm, "run", "build"], cwd=web_root)
+
+
 def check_ffmpeg() -> None:
-    step("3/4  ffmpeg (external dependency)")
+    step("4/5  ffmpeg (external dependency)")
     if shutil.which("ffmpeg"):
         print("  [ok] ffmpeg found")
         return
@@ -103,7 +147,7 @@ def check_ffmpeg() -> None:
 
 
 def sync_voices(minimal: bool, no_local: bool, no_voices: bool) -> None:
-    step("4/4  Offline voice models")
+    step("5/5  Offline voice models")
     if minimal or no_local or no_voices:
         print("  skipped (per flags). Run `python sync_voices.py` later to fetch models.")
         return
@@ -113,6 +157,7 @@ def sync_voices(minimal: bool, no_local: bool, no_voices: bool) -> None:
 def main(argv: list[str]) -> int:
     minimal = "--minimal" in argv
     no_ui = "--no-ui" in argv
+    no_web = "--no-web" in argv
     no_local = "--no-local" in argv
     no_voices = "--no-voices" in argv
 
@@ -120,7 +165,8 @@ def main(argv: list[str]) -> int:
     print(f"Python: {sys.version.split()[0]}  |  Platform: {sys.platform}  |  Root: {ROOT}")
 
     ensure_venv()
-    install_deps(minimal, no_ui, no_local)
+    install_deps(minimal, no_ui, no_web, no_local)
+    build_web_frontend(minimal, no_web)
     check_ffmpeg()
     sync_voices(minimal, no_local, no_voices)
 
@@ -134,7 +180,8 @@ def main(argv: list[str]) -> int:
     print("\nThen try:")
     print(f"  {py} narrate.py --list-voices            # free online voices")
     print(f"  {py} narrate.py mydoc.docx               # narrate a document")
-    print(f"  {py} app.py                              # browser UI (if installed)")
+    print(f"  {py} app.py                              # Gradio prototype")
+    print(f"  {py} -m web_api                          # Phase 3 local web app")
     return 0
 
 
