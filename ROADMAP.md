@@ -168,10 +168,17 @@ This phase is **additive**: it does not retire the CLI or the Gradio prototype.
 - [x] **React** frontend (Vite): drag-drop upload, voice cards with play buttons,
       pitch/pace sliders, format picker, live progress, and result download.
 - [x] One-command local launch on `127.0.0.1`, with no public binding by default.
-- [ ] Persist job metadata and recover interrupted queue state across server
-      restarts.
+- [x] Persist job metadata and recover interrupted queue state across server
+      restarts. Each job's state is written atomically to `jobs/<id>/job.json`;
+      on startup jobs are reloaded and any left `queued`/`running` are reconciled
+      to a clear failed state (resubmit resumes, since renders are
+      content-addressed and chunks are retained). A bounded active-job cap
+      (`MAX_ACTIVE_JOBS`) rejects excess submissions with `429`.
+- [x] Add durable SSE event IDs/heartbeats and reconnect coverage. Events carry
+      `id:` (the job version); `Last-Event-ID` resumes without re-delivery, and
+      idle heartbeats keep proxies from dropping the stream.
 - [ ] Add a durable local library/history view over persisted job metadata.
-- [ ] Add durable SSE event IDs/heartbeats and reconnect coverage.
+      (Backend `GET /api/jobs` list endpoint exists; the React view is pending.)
 - [ ] Complete real-provider end-to-end acceptance across supported operating
       systems before declaring Phase 3 done.
 
@@ -303,3 +310,16 @@ Record notable choices here so future-us remembers the *why*.
   and the bootstrap now installs/builds both interfaces by default. Durable job
   recovery and stronger SSE replay semantics remain explicitly open in
   [`RISKS_AND_INCONSISTENCIES.md`](RISKS_AND_INCONSISTENCIES.md).
+- **2026-07-25** — Made the Phase 3 job manager durable and bounded, closing
+  R-008 and R-009. Job state is now persisted atomically to `jobs/<id>/job.json`
+  on every transition and reloaded on startup; jobs interrupted mid-run (left
+  `queued`/`running` by a restart) are reconciled to a clear failed state that
+  resumes on resubmit, since renders stay content-addressed with retained chunks.
+  Added a bounded active-job cap (`MAX_ACTIVE_JOBS`, `429` past the limit) and a
+  `GET /api/jobs` listing for recovery/library use. SSE now emits `id:` per event
+  (the job version), honors `Last-Event-ID` on reconnect without re-delivering
+  seen snapshots, closes cleanly for already-terminal jobs, and sends idle
+  heartbeats so proxies keep the stream open — the browser's native `EventSource`
+  supplies `Last-Event-ID` automatically, so no frontend change was needed. All
+  additive: no engine change, no removed response fields; 3 new tests, full suite
+  green (36).

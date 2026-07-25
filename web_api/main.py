@@ -17,7 +17,7 @@ import os
 import re
 import threading
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -49,8 +49,20 @@ MAX_RULE_JSON_CHARS = 64 * 1024
 MAX_RULES = 250
 MAX_RULE_SOURCE_CHARS = 500
 MAX_RULE_TARGET_CHARS = 2_000
+# Bound on jobs that are queued or running at once. Generation is already
+# serialized (R-004), so this caps the *waiting* set a burst can create; new
+# submissions past it are rejected with 429 (deduped resubmissions are exempt).
+MAX_ACTIVE_JOBS = 32
+# Idle interval after which the SSE stream emits a comment heartbeat so long
+# proxy/browser connections are not dropped between progress updates (R-009).
+SSE_HEARTBEAT_SECONDS = 15.0
+_SSE_POLL_SECONDS = 0.15
+_SSE_HEARTBEAT_FRAME = ": keep-alive\n\n"
 TERMINAL_STATUSES = frozenset({"completed", "failed"})
+ACTIVE_STATUSES = frozenset({"queued", "running"})
 JobStatus = Literal["queued", "running", "completed", "failed"]
+_JOB_METADATA_NAME = "job.json"
+_JOB_PATH_FIELDS = ("input_path", "output_path", "work_dir")
 logger = logging.getLogger(__name__)
 
 ALLOWED_BROWSER_ORIGINS = frozenset(
@@ -167,6 +179,23 @@ class JobRecord:
             "error": self.error,
         }
 
+    def to_disk(self) -> dict[str, Any]:
+        """JSON-safe snapshot of the full record, including internal paths."""
+        data = asdict(self)
+        for key in _JOB_PATH_FIELDS:
+            data[key] = str(data[key])
+        return data
+
+    @classmethod
+    def from_disk(cls, data: dict[str, Any]) -> "JobRecord":
+        """Rebuild a record from persisted metadata, tolerating schema drift."""
+        known = {f.name for f in dataclass_fields(cls)}
+        values = {key: value for key, value in data.items() if key in known}
+        for key in _JOB_PATH_FIELDS:
+            if key in values:
+                values[key] = Path(values[key])
+        return cls(**values)
+
 
 class JobStore:
     """Small process-local registry with thread-safe callback updates."""
@@ -179,16 +208,73 @@ class JobStore:
         self.uploads_root.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
+        self._load_persisted()
 
-    def reserve(self, job: JobRecord) -> tuple[JobRecord, bool]:
-        """Return an existing equivalent job, or reserve the new one."""
+    # -- persistence -------------------------------------------------------
+
+    def _write(self, job: JobRecord) -> None:
+        """Atomically persist one job's metadata under its job directory."""
+        job_dir = self.jobs_root / job.id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        temporary = job_dir / f"{_JOB_METADATA_NAME}.tmp"
+        temporary.write_text(
+            json.dumps(job.to_disk(), ensure_ascii=False), encoding="utf-8"
+        )
+        temporary.replace(job_dir / _JOB_METADATA_NAME)
+
+    def persist(self, job: JobRecord) -> None:
+        with self._lock:
+            self._write(job)
+
+    def _load_persisted(self) -> None:
+        """Reload jobs from disk and recover any interrupted by a restart.
+
+        Jobs still marked queued/running had no in-memory task to resume, so
+        they are reconciled to a clear failed state. Because renders are
+        content-addressed and completed chunks are retained, resubmitting the
+        same document and settings picks up where the interrupted job stopped.
+        """
+        for meta in sorted(self.jobs_root.glob(f"*/{_JOB_METADATA_NAME}")):
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+                job = JobRecord.from_disk(data)
+            except Exception:  # noqa: BLE001 - skip unreadable/foreign metadata
+                logger.warning("Ignoring unreadable job metadata at %s", meta)
+                continue
+            if job.status in ACTIVE_STATUSES:
+                job.status = "failed"
+                job.stage = "failed"
+                job.message = "Interrupted by a server restart"
+                job.error = (
+                    "The server restarted before this job finished. Resubmit the "
+                    "same document and settings to resume; completed chunks were kept."
+                )
+                job.updated_at = _now()
+                job.version += 1
+                self._jobs[job.id] = job
+                self._write(job)
+            else:
+                self._jobs[job.id] = job
+
+    # -- registry ----------------------------------------------------------
+
+    def reserve(
+        self, job: JobRecord, *, max_active: int | None = None
+    ) -> tuple[JobRecord | None, bool]:
+        """Return an existing equivalent job, or reserve the new one.
+
+        Returns ``(None, False)`` when reserving a genuinely new job would
+        exceed ``max_active`` in-flight jobs; deduped resubmissions are exempt.
+        """
         with self._lock:
             existing = self._jobs.get(job.id)
             if existing and (
-                existing.status in {"queued", "running"}
+                existing.status in ACTIVE_STATUSES
                 or (existing.status == "completed" and existing.output_path.is_file())
             ):
                 return existing, False
+            if max_active is not None and self._active_count() >= max_active:
+                return None, False
             self._jobs[job.id] = job
             return job, True
 
@@ -205,6 +291,16 @@ class JobStore:
             job = self._jobs.get(job_id)
             return (job.public(), job.version) if job else None
 
+    def _active_count(self) -> int:
+        return sum(1 for job in self._jobs.values() if job.status in ACTIVE_STATUSES)
+
+    def list_public(self) -> list[dict[str, Any]]:
+        with self._lock:
+            ordered = sorted(
+                self._jobs.values(), key=lambda job: job.created_at, reverse=True
+            )
+            return [job.public() for job in ordered]
+
     def update(self, job_id: str, **changes: Any) -> JobRecord | None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -214,6 +310,7 @@ class JobStore:
                 setattr(job, key, value)
             job.updated_at = _now()
             job.version += 1
+            self._write(job)
             return job
 
 
@@ -501,9 +598,10 @@ def _start_job(app: FastAPI, job_id: str) -> None:
     task.add_done_callback(app.state.running_tasks.discard)
 
 
-def _sse_message(event: str, payload: dict[str, Any]) -> str:
+def _sse_message(event: str, payload: dict[str, Any], *, event_id: int | None = None) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event}\ndata: {data}\n\n"
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{prefix}event: {event}\ndata: {data}\n\n"
 
 
 def create_app(
@@ -775,7 +873,16 @@ def create_app(
             output_path=output_path,
             work_dir=job_dir / "chunks",
         )
-        selected, is_new = store.reserve(record)
+        selected, is_new = store.reserve(record, max_active=MAX_ACTIVE_JOBS)
+        if selected is None:
+            temporary.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Too many active jobs (limit {MAX_ACTIVE_JOBS}). "
+                    "Wait for one to finish, then retry."
+                ),
+            )
         if not is_new:
             temporary.unlink(missing_ok=True)
             return selected.public()
@@ -787,8 +894,14 @@ def create_app(
             store.discard(job_id)
             temporary.unlink(missing_ok=True)
             raise
+        store.persist(record)
         _start_job(api, job_id)
         return record.public()
+
+    @api.get("/api/jobs", tags=["jobs"])
+    async def list_jobs() -> dict[str, list[dict[str, Any]]]:
+        """All known jobs, newest first — survives restarts via persisted state."""
+        return {"jobs": api.state.job_store.list_public()}
 
     @api.get("/jobs/{job_id}", include_in_schema=False)
     @api.get("/api/jobs/{job_id}", tags=["jobs"])
@@ -804,8 +917,18 @@ def create_app(
         if api.state.job_store.get(job_id) is None:
             raise HTTPException(status_code=404, detail="Job not found.")
 
+        # Resume after the last event the client already saw (R-009). Each event
+        # id is the job's monotonic version, so a reconnect never re-delivers a
+        # snapshot the client has, and an already-terminal job closes cleanly.
+        raw_last_id = request.headers.get("last-event-id")
+        try:
+            resume_from = int(raw_last_id) if raw_last_id else -1
+        except ValueError:
+            resume_from = -1
+
         async def stream():
-            last_version = -1
+            last_version = resume_from
+            idle = 0.0
             while True:
                 snapshot = api.state.job_store.snapshot(job_id)
                 if snapshot is None:
@@ -818,13 +941,22 @@ def create_app(
                         else "error" if status == "failed"
                         else "progress"
                     )
-                    yield _sse_message(event, payload)
+                    yield _sse_message(event, payload, event_id=version)
                     last_version = version
+                    idle = 0.0
                     if status in TERMINAL_STATUSES:
                         return
+                elif payload["status"] in TERMINAL_STATUSES:
+                    # Client already holds the terminal snapshot; close the stream
+                    # instead of holding it open with heartbeats forever.
+                    return
                 if await request.is_disconnected():
                     return
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(_SSE_POLL_SECONDS)
+                idle += _SSE_POLL_SECONDS
+                if idle >= SSE_HEARTBEAT_SECONDS:
+                    yield _SSE_HEARTBEAT_FRAME
+                    idle = 0.0
 
         return StreamingResponse(
             stream(),

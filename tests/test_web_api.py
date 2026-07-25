@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -68,6 +69,8 @@ class WebApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
+        self.storage_root = root / "jobs"
+        self.preview_root = root / "previews"
         self.provider = DummyProvider()
         self.provider_patches = [
             mock.patch("web_api.main.providers.all_provider_ids", return_value=["dummy"]),
@@ -84,8 +87,8 @@ class WebApiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.app = create_app(
-            storage_root=root / "jobs",
-            preview_root=root / "previews",
+            storage_root=self.storage_root,
+            preview_root=self.preview_root,
         )
         self.client_context = TestClient(self.app)
         self.client = self.client_context.__enter__()
@@ -456,6 +459,139 @@ class WebApiTests(unittest.TestCase):
     def test_default_storage_is_anchored_to_repository(self):
         self.assertTrue(DEFAULT_STORAGE_ROOT.is_absolute())
         self.assertEqual(DEFAULT_STORAGE_ROOT, REPO_ROOT / "outputs" / "web_jobs")
+
+    def _hanging_build(self, release, payload=b"audio"):
+        async def hanging(input_path, output, **kwargs):
+            await release.wait()
+            Path(output).write_bytes(payload)
+            return narrate.AudiobookResult(
+                output=Path(output),
+                fmt=kwargs["fmt"],
+                duration=None,
+                size=len(payload),
+                n_blocks=1,
+                n_paragraphs=1,
+                n_chunks=1,
+                total_chars=4,
+                work_dir=Path(kwargs["work_dir"]),
+            )
+
+        return hanging
+
+    def test_restart_recovers_persisted_jobs_and_marks_interrupted(self):
+        release = asyncio.Event()
+        with mock.patch(
+            "web_api.main.narrate.build_audiobook_async",
+            side_effect=self._hanging_build(release),
+        ):
+            created = self.client.post(
+                "/api/jobs",
+                files={"document": ("live.txt", b"Live text", "text/plain")},
+                data={"provider": "dummy", "voice": "en-test-one"},
+            )
+            self.assertEqual(created.status_code, 202)
+            job_id = created.json()["id"]
+            self._wait_for_status(job_id, "running")
+
+            # A fresh server process over the same storage reloads persisted jobs
+            # and recovers the one left running by the "restart".
+            recovered = create_app(
+                storage_root=self.storage_root, preview_root=self.preview_root
+            )
+            reloaded = recovered.state.job_store.get(job_id)
+            self.assertIsNotNone(reloaded)
+            self.assertEqual(reloaded.status, "failed")
+            self.assertIn("restarted", (reloaded.error or "").lower())
+
+            # Once the original job finishes, a later restart reloads it as-is.
+            self.client.portal.call(release.set)
+            terminal = self._wait_for_terminal(job_id)
+            self.assertEqual(terminal["status"], "completed")
+
+        reopened = create_app(
+            storage_root=self.storage_root, preview_root=self.preview_root
+        )
+        self.assertEqual(reopened.state.job_store.get(job_id).status, "completed")
+
+    def test_active_job_limit_returns_429_for_new_submissions(self):
+        release = asyncio.Event()
+        with mock.patch("web_api.main.MAX_ACTIVE_JOBS", 1), mock.patch(
+            "web_api.main.narrate.build_audiobook_async",
+            side_effect=self._hanging_build(release),
+        ):
+            first = self.client.post(
+                "/api/jobs",
+                files={"document": ("one.txt", b"One", "text/plain")},
+                data={"provider": "dummy", "voice": "en-test-one"},
+            )
+            self.assertEqual(first.status_code, 202)
+            self._wait_for_status(first.json()["id"], "running")
+
+            second = self.client.post(
+                "/api/jobs",
+                files={"document": ("two.txt", b"Two distinct", "text/plain")},
+                data={"provider": "dummy", "voice": "en-test-one"},
+            )
+            self.assertEqual(second.status_code, 429)
+            self.assertIn("active jobs", second.json()["detail"])
+
+            self.client.portal.call(release.set)
+            self._wait_for_terminal(first.json()["id"])
+
+    def test_jobs_list_and_sse_event_ids_support_resume(self):
+        async def fake_build(input_path, output, **kwargs):
+            kwargs["on_chunk"](1, 1, 4, "done")
+            Path(output).write_bytes(b"done-audio")
+            return narrate.AudiobookResult(
+                output=Path(output),
+                fmt=kwargs["fmt"],
+                duration=1.0,
+                size=10,
+                n_blocks=1,
+                n_paragraphs=1,
+                n_chunks=1,
+                total_chars=4,
+                work_dir=Path(kwargs["work_dir"]),
+            )
+
+        with mock.patch(
+            "web_api.main.narrate.build_audiobook_async", side_effect=fake_build
+        ):
+            created = self.client.post(
+                "/api/jobs",
+                files={"document": ("chapter.txt", b"Book text", "text/plain")},
+                data={"provider": "dummy", "voice": "en-test-one"},
+            )
+            job_id = created.json()["id"]
+            self._wait_for_terminal(job_id)
+
+        listing = self.client.get("/api/jobs")
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn(job_id, [job["id"] for job in listing.json()["jobs"]])
+
+        with self.client.stream("GET", f"/api/jobs/{job_id}/events") as events:
+            text = "".join(events.iter_text())
+        self.assertIn("event: complete", text)
+        event_ids = re.findall(r"id: (\d+)", text)
+        self.assertTrue(event_ids)
+
+        # Reconnecting at the terminal event id closes without re-delivering it.
+        with self.client.stream(
+            "GET",
+            f"/api/jobs/{job_id}/events",
+            headers={"Last-Event-ID": event_ids[-1]},
+        ) as again:
+            replay = "".join(again.iter_text())
+        self.assertNotIn("event: complete", replay)
+
+    def _wait_for_status(self, job_id, status, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = self.client.get(f"/api/jobs/{job_id}")
+            if response.status_code == 200 and response.json()["status"] == status:
+                return response.json()
+            time.sleep(0.01)
+        self.fail(f"Job {job_id} did not reach status {status!r}")
 
     def _wait_for_terminal(self, job_id, timeout=2.0):
         deadline = time.monotonic() + timeout
