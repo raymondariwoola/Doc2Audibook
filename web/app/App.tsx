@@ -230,6 +230,37 @@ function estimateMarks(words: string[], duration: number): WordMark[] {
   });
 }
 
+// Preferred default narrators, best first. en-US-AndrewNeural matches the engine
+// default (narrate.DEFAULT_VOICE); the rest are natural-sounding en-US fallbacks.
+const PREFERRED_VOICE_IDS = [
+  "en-US-AndrewNeural",
+  "en-US-AvaNeural",
+  "en-US-EmmaNeural",
+  "en-US-BrianNeural",
+  "en-US-JennyNeural",
+  "en-US-GuyNeural",
+];
+
+function isEnglish(voice: Voice): boolean {
+  return (voice.locale || "").toLowerCase().replace("_", "-").startsWith("en");
+}
+
+// Choose a sensible default instead of the alphabetically-first voice (which was
+// an Afrikaans narrator). Prefer a known-good en-US voice, then any US English,
+// then any English, then whatever the provider offers first.
+function pickDefaultVoice(voices: Voice[]): string {
+  for (const id of PREFERRED_VOICE_IDS) {
+    if (voices.some((voice) => voice.id === id)) return id;
+  }
+  const usEnglish = voices.find(
+    (voice) => (voice.locale || "").toLowerCase().replace("_", "-") === "en-us",
+  );
+  if (usEnglish) return usEnglish.id;
+  const anyEnglish = voices.find(isEnglish);
+  if (anyEnglish) return anyEnglish.id;
+  return voices[0]?.id ?? "";
+}
+
 function normalizeProgress(progress?: number): number {
   if (!Number.isFinite(progress)) return 0;
   const value = Number(progress);
@@ -411,7 +442,7 @@ export default function App() {
         setSelectedVoice((current) =>
           nextVoices.some((voice) => voice.id === current)
             ? current
-            : (nextVoices[0]?.id ?? ""),
+            : pickDefaultVoice(nextVoices),
         );
       })
       .catch((caught) => {

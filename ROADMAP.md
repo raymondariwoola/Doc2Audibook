@@ -361,3 +361,13 @@ Record notable choices here so future-us remembers the *why*.
   full suite green (42). Build order: `npm --prefix web ci && npm --prefix web run
   build`, then `pip wheel .` (or `python -m build`). This unblocks Phase 4
   desktop packaging.
+- **2026-07-25** — Web app now defaults to a sensible **English narrator**
+  (`en-US-AndrewNeural`, matching `narrate.DEFAULT_VOICE`) instead of the
+  alphabetically-first voice (an Afrikaans one). `pickDefaultVoice` prefers a
+  known-good en-US voice, then any US English, then any English, then the first
+  available — so non-edge providers still get a reasonable default. Verified live
+  end-to-end on **Windows with edge**: with ffmpeg on PATH (Gyan.FFmpeg 8.1.2, on
+  the user PATH via winget), a real render completed — extract → edge synthesize →
+  ffmpeg assemble → MP3 with duration/size — progress toward the open "real-provider
+  end-to-end acceptance" item. R-015 stays *controlled* (ffmpeg is still an external
+  dependency; other machines must have it on PATH).
