@@ -39,7 +39,23 @@ SERVICE_VERSION = "0.1.0"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STORAGE_ROOT = REPO_ROOT / "outputs" / "web_jobs"
 DEFAULT_PREVIEW_ROOT = REPO_ROOT / ".narrate_cache" / "web_previews"
-DEFAULT_FRONTEND_DIST = REPO_ROOT / "web" / "dist"
+
+
+def _resolve_frontend_dist(bundled: Path, source: Path) -> Path:
+    """Serve the React client from the copy bundled into an installed wheel
+    (``web_api/frontend``) when present, else the source-tree ``web/dist`` build
+    used during development. This keeps ``narrate-web`` from a wheel from exposing
+    the API without its UI (R-012)."""
+    if (bundled / "index.html").is_file():
+        return bundled
+    return source
+
+
+# The build hook (setup.py) copies web/dist into this package as web_api/frontend.
+_BUNDLED_FRONTEND = Path(__file__).resolve().parent / "frontend"
+DEFAULT_FRONTEND_DIST = _resolve_frontend_dist(
+    _BUNDLED_FRONTEND, REPO_ROOT / "web" / "dist"
+)
 DEFAULT_PREVIEW_TEXT = (
     "Hello — this is a preview of how your audiobook will sound. "
     "Choose the voice that feels right for your story."

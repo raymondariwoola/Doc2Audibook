@@ -35,3 +35,8 @@ py-modules = ["narrate", "providers", "app"]
 
 [tool.setuptools.packages.find]
 include = ["web_api*"]
+
+# The built React client is copied into web_api/frontend by setup.py's build hook
+# and shipped as package data so `narrate-web` from a wheel serves the UI (R-012).
+[tool.setuptools.package-data]
+web_api = ["frontend/**/*"]

@@ -4,6 +4,12 @@ __pycache__/
 *_chunks/
 *.egg-info/
 
+# Build artifacts
+/build/
+/dist/
+# Frontend copied into the package by setup.py's build hook (R-012)
+web_api/frontend/
+
 # Gradio prototype runtime output
 outputs/
 .narrate_cache/
