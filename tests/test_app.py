@@ -6,6 +6,12 @@ import app
 
 
 class AppPathTests(unittest.TestCase):
+    def test_modern_ui_has_branded_responsive_styles(self):
+        self.assertIn(".app-hero", app.APP_CSS)
+        self.assertIn(".surface-card", app.APP_CSS)
+        self.assertIn(".result-card", app.APP_CSS)
+        self.assertIn("@media (max-width: 600px)", app.APP_CSS)
+
     def test_rules_change_render_digest_and_cache_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "same.txt"

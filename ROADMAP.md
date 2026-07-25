@@ -90,6 +90,9 @@ Goal: make the vision **tangible** fast, on top of the existing engine.
 - [x] Progress bar per chunk; final duration + size; download button.
 - [x] Provider picker in the UI (added in Phase 2): switch engines, voices reload
       per provider, pitch control disables where unsupported.
+- [x] Professional responsive UI refresh: branded product header, structured
+      four-step configuration flow, card-based result workspace, polished empty
+      state, and mobile/tablet breakpoints.
 
 **Engine work folded in this phase**
 - [x] Add **pitch** support through the pipeline (`edge-tts` supports `pitch=`).
@@ -254,11 +257,16 @@ Record notable choices here so future-us remembers the *why*.
   Model files stay gitignored and are re-fetched per machine. Added agent docs
   (`AGENTS.md` canonical, `CLAUDE.md` + `.github/copilot-instructions.md` point to
   it) documenting the machine-switch protocol so agents behave consistently.
-- **2026-07-24** — Completed the reliability audit remediation. Added a 17-test
-  standard-library suite; safe content/settings/provider-model cache manifests;
+- **2026-07-24** — Completed the reliability audit remediation. Added the
+  standard-library test suite; safe content/settings/provider-model cache manifests;
   rule-aware UI render keys and collision-safe output names; an awaitable
   `build_audiobook_async(...)`; complete setuptools module metadata; exact direct
   dependency pins; and SHA-256 verification for every manifest-managed voice
   artifact. Bootstrap now repairs partial virtual environments and uses
   redirect-safe console output. Verified Piper and Kokoro end-to-end on Windows
   (synthesize → MP3 → ffmpeg assembly); OpenAI remains key-blocked and unverified.
+- **2026-07-25** — Refreshed the Gradio prototype into a professional,
+  responsive product workspace without changing engine behavior. Replaced the
+  default component stack with a branded header, clear four-step configuration
+  hierarchy, dedicated voice-preview and output areas, restrained typography and
+  color tokens, purposeful empty/result states, and tablet/mobile breakpoints.
