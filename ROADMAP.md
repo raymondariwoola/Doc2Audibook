@@ -177,8 +177,11 @@ This phase is **additive**: it does not retire the CLI or the Gradio prototype.
 - [x] Add durable SSE event IDs/heartbeats and reconnect coverage. Events carry
       `id:` (the job version); `Last-Event-ID` resumes without re-delivery, and
       idle heartbeats keep proxies from dropping the stream.
-- [ ] Add a durable local library/history view over persisted job metadata.
-      (Backend `GET /api/jobs` list endpoint exists; the React view is pending.)
+- [x] Add a durable local library/history view over persisted job metadata.
+      React "Library" view (topbar Studio/Library toggle) lists every persisted
+      job over `GET /api/jobs` — completed ones show duration/size/format with an
+      inline player and download; failed ones surface their error; survives
+      restarts via the reloaded job store.
 - [ ] Complete real-provider end-to-end acceptance across supported operating
       systems before declaring Phase 3 done.
 
@@ -323,3 +326,15 @@ Record notable choices here so future-us remembers the *why*.
   supplies `Last-Event-ID` automatically, so no frontend change was needed. All
   additive: no engine change, no removed response fields; 3 new tests, full suite
   green (36).
+- **2026-07-25** — Added the Phase 3 **Library** view over the now-persisted job
+  store. A topbar Studio/Library toggle switches the React app to a history of
+  every job returned by `GET /api/jobs`: completed entries show duration, size,
+  and format with an inline player and a download button; failed entries surface
+  their sanitized error; the list survives restarts via the reloaded store and
+  refreshes on open and after a job finishes. UI-only (`web/app/App.tsx` +
+  `app.css`), matching the existing warm editorial theme; `tsc` + `vite build`
+  clean, screenshot-verified empty and populated (the populated shot doubled as a
+  real restart-recovery check — a completed and a genuinely failed job both
+  reloaded from disk). Note: a real end-to-end render surfaced R-015 locally
+  (ffmpeg absent from this shell's PATH); the job failed gracefully with chunks
+  retained, exactly as designed — an environment gap, not a regression.

@@ -11,6 +11,7 @@ import {
   FileText,
   Gauge,
   Headphones,
+  Library,
   LoaderCircle,
   Play,
   RefreshCw,
@@ -70,6 +71,20 @@ type JobResult = {
   download_url?: string;
 };
 
+type Rule = {
+  from: string;
+  to: string;
+};
+
+type JobSettings = {
+  provider?: string;
+  voice?: string;
+  rate?: number;
+  pitch?: number;
+  output_format?: string;
+  rules?: Rule[];
+};
+
 type Job = {
   id: string;
   status: JobStatus;
@@ -77,13 +92,20 @@ type Job = {
   progress?: number;
   message?: string;
   filename?: string;
+  created_at?: string;
+  updated_at?: string;
+  settings?: JobSettings;
   result?: JobResult | null;
   error?: string | null;
 };
 
-type Rule = {
-  from: string;
-  to: string;
+type AppView = "studio" | "library";
+
+const STATUS_LABELS: Record<JobStatus, string> = {
+  queued: "Queued",
+  running: "In progress",
+  completed: "Ready",
+  failed: "Failed",
 };
 
 const rawApiBase =
@@ -145,6 +167,24 @@ function formatDuration(seconds?: number | null): string {
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
+function formatTimestamp(iso?: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function describeNarrator(settings?: JobSettings): string {
+  if (!settings) return "Narrated audiobook";
+  const parts = [settings.provider, settings.voice].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Narrated audiobook";
+}
+
 function extensionFor(file: File): string {
   const dotIndex = file.name.lastIndexOf(".");
   return dotIndex >= 0 ? file.name.slice(dotIndex).toLowerCase() : "";
@@ -192,6 +232,10 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [view, setView] = useState<AppView>("studio");
+  const [libraryJobs, setLibraryJobs] = useState<Job[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProvider),
@@ -263,10 +307,38 @@ export default function App() {
     }
   }, []);
 
+  const loadLibrary = useCallback(async () => {
+    setLibraryLoading(true);
+    setLibraryError("");
+    try {
+      const response = await fetch(apiUrl("/api/jobs"), {
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("Could not load your audiobook library.");
+      const payload = (await response.json()) as { jobs?: Job[] };
+      setLibraryJobs(Array.isArray(payload.jobs) ? payload.jobs : []);
+    } catch (caught) {
+      setLibraryJobs([]);
+      setLibraryError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not load your audiobook library.",
+      );
+    } finally {
+      setLibraryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void checkHealth();
     void loadProviders();
   }, [checkHealth, loadProviders]);
+
+  // Refresh the library whenever it is opened, and after a job completes so a
+  // freshly rendered audiobook appears without a manual reload.
+  useEffect(() => {
+    if (view === "library") void loadLibrary();
+  }, [view, loadLibrary, job?.status]);
 
   useEffect(() => {
     if (!selectedProvider) {
@@ -519,6 +591,27 @@ export default function App() {
           <span className="brand-edition">Studio</span>
         </a>
 
+        <nav className="view-nav" aria-label="Views">
+          <button
+            type="button"
+            className={view === "studio" ? "active" : ""}
+            onClick={() => setView("studio")}
+            aria-pressed={view === "studio"}
+          >
+            <Sparkles size={15} aria-hidden="true" />
+            Studio
+          </button>
+          <button
+            type="button"
+            className={view === "library" ? "active" : ""}
+            onClick={() => setView("library")}
+            aria-pressed={view === "library"}
+          >
+            <Library size={15} aria-hidden="true" />
+            Library
+          </button>
+        </nav>
+
         <div className="topbar-actions">
           <span className="local-badge">
             <ShieldCheck size={15} aria-hidden="true" />
@@ -552,6 +645,8 @@ export default function App() {
       </header>
 
       <main>
+        {view === "studio" ? (
+          <>
         <section className="hero" aria-labelledby="page-title">
           <div>
             <span className="eyebrow">
@@ -1142,6 +1237,164 @@ export default function App() {
             </div>
           </aside>
         </form>
+          </>
+        ) : (
+          <section className="library-view" aria-labelledby="library-title">
+            <div className="library-head">
+              <div>
+                <span className="eyebrow">
+                  <Library size={15} aria-hidden="true" />
+                  Your library
+                </span>
+                <h1 id="library-title" className="library-title">
+                  Audiobooks
+                </h1>
+                <p>
+                  Every narration created on this machine. Files stay local —
+                  reopen, play, or download them anytime.
+                </p>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void loadLibrary()}
+                disabled={libraryLoading}
+              >
+                {libraryLoading ? (
+                  <LoaderCircle className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <RefreshCw size={16} aria-hidden="true" />
+                )}
+                Refresh
+              </button>
+            </div>
+
+            {libraryError && (
+              <div className="alert" role="alert">
+                <AlertCircle size={19} aria-hidden="true" />
+                <span>{libraryError}</span>
+                <button
+                  type="button"
+                  onClick={() => setLibraryError("")}
+                  aria-label="Dismiss"
+                >
+                  <X size={17} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+
+            {libraryLoading && !libraryJobs.length ? (
+              <div className="library-empty">
+                <LoaderCircle className="spin" size={26} aria-hidden="true" />
+                <strong>Loading your audiobooks…</strong>
+              </div>
+            ) : !libraryJobs.length ? (
+              <div className="library-empty">
+                <span className="library-empty-icon">
+                  <BookOpenText size={26} aria-hidden="true" />
+                </span>
+                <strong>No audiobooks yet</strong>
+                <span>Head to the Studio to create your first narration.</span>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => setView("studio")}
+                >
+                  <Sparkles size={17} aria-hidden="true" />
+                  Open the Studio
+                </button>
+              </div>
+            ) : (
+              <ul className="library-list">
+                {libraryJobs.map((entry) => {
+                  const entryDownloadUrl = apiUrl(
+                    entry.result?.download_url ||
+                      `/api/jobs/${encodeURIComponent(entry.id)}/output`,
+                  );
+                  const title =
+                    entry.result?.filename || entry.filename || "Audiobook";
+                  return (
+                    <li
+                      className={`library-card status-${entry.status}`}
+                      key={entry.id}
+                    >
+                      <div className="library-card-main">
+                        <span className="library-card-icon">
+                          <FileAudio size={20} aria-hidden="true" />
+                        </span>
+                        <div className="library-card-info">
+                          <strong title={title}>{title}</strong>
+                          <span className="library-card-meta">
+                            {describeNarrator(entry.settings)}
+                            {entry.created_at
+                              ? ` · ${formatTimestamp(entry.created_at)}`
+                              : ""}
+                          </span>
+                        </div>
+                        <span className={`status-pill status-pill-${entry.status}`}>
+                          {STATUS_LABELS[entry.status]}
+                        </span>
+                      </div>
+
+                      {entry.status === "completed" ? (
+                        <>
+                          <div className="library-card-metrics">
+                            <div>
+                              <span>Duration</span>
+                              <strong>
+                                {formatDuration(entry.result?.duration)}
+                              </strong>
+                            </div>
+                            <div>
+                              <span>Size</span>
+                              <strong>{formatBytes(entry.result?.size)}</strong>
+                            </div>
+                            <div>
+                              <span>Format</span>
+                              <strong>
+                                {(
+                                  entry.result?.format ||
+                                  entry.settings?.output_format ||
+                                  ""
+                                ).toUpperCase() || "—"}
+                              </strong>
+                            </div>
+                          </div>
+                          <audio
+                            src={entryDownloadUrl}
+                            controls
+                            preload="none"
+                            aria-label={`${title} audiobook`}
+                          />
+                          <div className="library-card-actions">
+                            <a
+                              className="primary-button"
+                              href={entryDownloadUrl}
+                              download
+                            >
+                              <Download size={17} aria-hidden="true" />
+                              Download
+                            </a>
+                          </div>
+                        </>
+                      ) : entry.status === "failed" ? (
+                        <p className="library-card-error">
+                          {entry.error ||
+                            entry.message ||
+                            "This audiobook did not finish. Recreate it in the Studio."}
+                        </p>
+                      ) : (
+                        <p className="library-card-progress">
+                          {entry.message || "Still working on this audiobook…"}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        )}
       </main>
 
       <footer>
