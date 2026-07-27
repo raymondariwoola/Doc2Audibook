@@ -22,6 +22,7 @@ desktop app for macOS and Windows** — all running locally, not a public servic
 | **3. Local web app** | 🔨 In progress | FastAPI + React, runs on `localhost` |
 | **4. Native desktop** | 🔨 In progress | Tauri + frozen Python sidecar; Windows 4A internal build exists |
 | **5. Audiobook polish** | ⬜ Planned | M4B chapters, resume UX, library |
+| **6. Document refinement** | 💡 Proposed | Optional offline review, revised document export, then narration |
 
 Legend: ✅ done · 🔨 in progress · ⬜ planned
 
@@ -232,6 +233,20 @@ release boundary are maintained in [`docs/desktop/`](docs/desktop/).
 
 ---
 
+## Phase 6 — Document refinement 💡 Proposed
+
+Goal: optionally review an uploaded document for spelling, grammar, punctuation,
+style, and structural issues before narration; let the user accept or reject
+auditable suggestions, download a revised copy, and narrate either snapshot.
+
+This is a proposal, not implemented scope. The recommended zero-cost approach is
+offline English review first, with original files preserved and no automatic
+generative rewriting. Product boundaries, architecture, format limitations,
+security requirements, staged delivery, and owner decisions are defined in
+[`docs/DOCUMENT_REVIEW_PROPOSAL.md`](docs/DOCUMENT_REVIEW_PROPOSAL.md).
+
+---
+
 ## Reliability remediation
 
 The 2026-07-24 repository audit found the following concrete risks. This list is
@@ -431,3 +446,10 @@ Record notable choices here so future-us remembers the *why*.
   inputs, and macOS access only the owner can supply. It records official source
   links, what every action blocks, and which credentials must never enter Git or
   chat; see [`docs/desktop/OWNER_ACTIONS.md`](docs/desktop/OWNER_ACTIONS.md).
+- **2026-07-27** — Proposed Phase 6, an optional offline-first document review
+  stage before narration. The design preserves originals, records reversible
+  suggestion decisions, exports a reviewed copy, and lets the user narrate the
+  original or reviewed snapshot. Harper is the leading zero-cost English engine;
+  DOCX formatting preservation and PDF-as-editable-export remain explicit staged
+  gates. See
+  [`docs/DOCUMENT_REVIEW_PROPOSAL.md`](docs/DOCUMENT_REVIEW_PROPOSAL.md).
