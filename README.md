@@ -25,6 +25,10 @@ layers. The Phase 3 app does not replace or redirect the prototype.
 See [`ROADMAP.md`](ROADMAP.md) for progress on paid providers, the local web app,
 and native macOS/Windows desktop builds.
 
+> **Just want to open the program?** Follow
+> [`START_HERE.md`](START_HERE.md) for copy-and-paste macOS and Windows setup,
+> launch, shutdown, and troubleshooting instructions.
+
 ---
 
 ## Quick start (and switching machines)

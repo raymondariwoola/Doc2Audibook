@@ -453,3 +453,9 @@ Record notable choices here so future-us remembers the *why*.
   DOCX formatting preservation and PDF-as-editable-export remain explicit staged
   gates. See
   [`docs/DOCUMENT_REVIEW_PROPOSAL.md`](docs/DOCUMENT_REVIEW_PROPOSAL.md).
+- **2026-08-07** — Added a plain-language owner startup guide for macOS and
+  Windows. [`START_HERE.md`](START_HERE.md) makes the Phase 3 local web app the
+  recommended everyday route, separates first-time setup from repeat launches,
+  documents shutdown and port/Node.js/FFmpeg recovery, retains the Gradio
+  fallback, and clearly distinguishes source use from the unfinished native
+  desktop release path.
