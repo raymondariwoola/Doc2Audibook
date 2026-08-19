@@ -266,20 +266,64 @@ SPACED_OPERATORS: list[tuple[str, str]] = [
 ]
 
 
+# Inline emotion tags. Only providers whose capabilities advertise
+# `supports_emotion_tags` are given these; every other engine reads the tag as a
+# word ("laugh"), so they are removed before the text reaches one. Deliberately
+# limited to the known set: a document containing <placeholder> keeps today's
+# behaviour of being read aloud.
+_EMOTION_TAG_RE = None
+
+
+def _emotion_tag_re():
+    """Compiled emotion-tag pattern, built on first use.
+
+    Lazy rather than module-level because `import providers` is deliberately
+    deferred to the bottom of this module; the canonical tag list lives with the
+    provider that performs them.
+    """
+    global _EMOTION_TAG_RE
+    if _EMOTION_TAG_RE is None:
+        alternatives = "|".join(
+            re.escape(tag) for tag in providers.ORPHEUS_EMOTION_TAGS
+        )
+        _EMOTION_TAG_RE = re.compile(rf"<({alternatives})>", re.IGNORECASE)
+    return _EMOTION_TAG_RE
+
+
+def strip_emotion_tags(text: str) -> str:
+    """Remove inline emotion tags, tidying the space they leave behind."""
+    text = _emotion_tag_re().sub(" ", text)
+    # A tag sitting before punctuation must not leave " ." behind.
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
 def _spoken_percent(text: str) -> str:
     # "50%" -> "50 percent", "%" on its own -> " percent"
     text = re.sub(r"(\d)\s*%", r"\1 percent", text)
     return text.replace("%", " percent")
 
 
-def clean_for_speech(text: str, user_rules: list[tuple[str, str]]) -> str:
-    """Apply user rules, strip formatting artifacts, and verbalize symbols."""
+def clean_for_speech(text: str, user_rules: list[tuple[str, str]], *,
+                     keep_emotion_tags: bool = False) -> str:
+    """Apply user rules, strip formatting artifacts, and verbalize symbols.
+
+    `keep_emotion_tags` preserves inline tags like <laugh> for engines that
+    perform them. It defaults to False so that text prepared for Orpheus does
+    not read as literal words when the same document is rendered with another
+    provider.
+    """
     # 1. User-supplied find/replace rules run first so document-specific labels
     #    can be reworded before any other transformation touches them.
     for src, dst in user_rules:
         text = text.replace(src, dst)
 
-    # 2. Strip markdown / formatting artifacts that would be read literally.
+    # 2. Emotion tags: kept only for an engine that performs them. This runs
+    #    after the user rules so a rule may still introduce one.
+    if not keep_emotion_tags:
+        text = strip_emotion_tags(text)
+
+    # 3. Strip markdown / formatting artifacts that would be read literally.
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)          # images
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)        # links -> label
     text = re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", text)          # inline code
@@ -289,26 +333,28 @@ def clean_for_speech(text: str, user_rules: list[tuple[str, str]]) -> str:
     text = re.sub(r"^\s*>\s?", "", text, flags=re.MULTILINE)      # blockquotes
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)    # stray heading #
 
-    # 3. Verbalize symbols and operators.
+    # 4. Verbalize symbols and operators.
     text = _spoken_percent(text)
     for src, dst in SYMBOL_REPLACEMENTS:
         text = text.replace(src, dst)
     for pattern, dst in SPACED_OPERATORS:
         text = re.sub(pattern, dst, text)
 
-    # 4. Collapse whitespace introduced by the substitutions.
+    # 5. Collapse whitespace introduced by the substitutions.
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     return text.strip()
 
 
-def blocks_to_paragraphs(blocks: list[dict], user_rules: list[tuple[str, str]]) -> list[str]:
+def blocks_to_paragraphs(blocks: list[dict], user_rules: list[tuple[str, str]], *,
+                         keep_emotion_tags: bool = False) -> list[str]:
     """Turn ordered blocks into cleaned paragraphs, inserting a pause cue
     before each major (Heading 1 / Title) section break."""
     paragraphs: list[str] = []
     seen_first_heading = False
     for block in blocks:
-        cleaned = clean_for_speech(block["text"], user_rules)
+        cleaned = clean_for_speech(block["text"], user_rules,
+                                   keep_emotion_tags=keep_emotion_tags)
         if not cleaned:
             continue
         if block["type"] == "heading":
@@ -324,6 +370,22 @@ def blocks_to_paragraphs(blocks: list[dict], user_rules: list[tuple[str, str]]) 
 
 
 # ----------------------------------------------------------------------------
+def resolve_max_chars(
+    provider: "providers.TTSProvider", max_chars: int | None = None
+) -> int:
+    """Chunk size to use: an explicit request wins, else the provider's own
+    preference, else the global default.
+
+    The default is sized for edge-tts, where chunking is network-bound and big
+    requests are cheap. Engines that generate audio token-by-token need a much
+    smaller unit, so they declare `preferred_max_chars` and get it automatically
+    rather than relying on every caller to remember a flag.
+    """
+    if max_chars is not None:
+        return max_chars
+    return provider.capabilities().preferred_max_chars or MAX_CHUNK_CHARS
+
+
 # Chunking — group paragraphs under MAX_CHUNK_CHARS, never splitting a sentence.
 # ----------------------------------------------------------------------------
 
@@ -678,7 +740,7 @@ async def build_audiobook_async(
     user_rules: Optional[list[tuple[str, str]]] = None,
     work_dir: Optional[Path] = None,
     keep_chunks: bool = False,
-    max_chars: int = MAX_CHUNK_CHARS,
+    max_chars: int | None = None,
     on_stage: Optional[Callable[[str, dict], None]] = None,
     on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> AudiobookResult:
@@ -695,12 +757,16 @@ async def build_audiobook_async(
         raise ValueError(f"Unsupported format '{fmt}'. Choose one of: "
                          f"{', '.join(SUPPORTED_FORMATS)}")
     prov = providers.get_provider(provider)
+    max_chars = resolve_max_chars(prov, max_chars)
     if work_dir is None:
         work_dir = output.with_name(output.stem + "_chunks")
     work_dir = Path(work_dir)
 
     blocks = await asyncio.to_thread(extract_blocks, input_path)
-    paragraphs = blocks_to_paragraphs(blocks, user_rules or [])
+    paragraphs = blocks_to_paragraphs(
+        blocks, user_rules or [],
+        keep_emotion_tags=prov.capabilities().supports_emotion_tags,
+    )
     chunks = chunk_paragraphs(paragraphs, max_chars)
     if not chunks:
         raise ValueError("No readable text was extracted from the document.")
@@ -759,7 +825,7 @@ def build_audiobook(
     user_rules: Optional[list[tuple[str, str]]] = None,
     work_dir: Optional[Path] = None,
     keep_chunks: bool = False,
-    max_chars: int = MAX_CHUNK_CHARS,
+    max_chars: int | None = None,
     on_stage: Optional[Callable[[str, dict], None]] = None,
     on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> AudiobookResult:
@@ -822,8 +888,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="JSON file of find/replace rules ({\"from\":\"to\"} object or [{from,to}] list)")
     p.add_argument("--work-dir", help="folder for intermediate chunk MP3s (default: <output>_chunks)")
     p.add_argument("--keep-chunks", action="store_true", help="keep intermediate chunk files")
-    p.add_argument("--max-chars", type=int, default=MAX_CHUNK_CHARS,
-                   help=f"max characters per chunk (default: {MAX_CHUNK_CHARS})")
+    p.add_argument("--max-chars", type=int, default=None,
+                   help=f"max characters per chunk (default: the provider's own "
+                        f"preference, or {MAX_CHUNK_CHARS})")
     return p
 
 
@@ -864,7 +931,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Reading    : {input_path}  ({input_path.suffix.lower()})")
     print(f"Provider   : {args.provider}")
-    print(f"Voice      : {args.voice}   Rate: {args.rate}   Pitch: {args.pitch}   Format: {fmt}")
+
+    # Report rate/pitch as the selected engine will actually treat them, rather
+    # than echoing values it silently ignores.
+    caps = providers.get_provider(args.provider).capabilities()
+    rate_note = args.rate if caps.supports_rate else f"{args.rate} (ignored)"
+    pitch_note = args.pitch if caps.supports_pitch else f"{args.pitch} (ignored)"
+    print(f"Voice      : {args.voice}   Rate: {rate_note}   "
+          f"Pitch: {pitch_note}   Format: {fmt}")
 
     def on_stage(stage: str, info: dict) -> None:
         if stage == "extracted":

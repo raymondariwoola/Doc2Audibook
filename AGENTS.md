@@ -75,10 +75,29 @@ are large and gitignored on purpose.
 | `kokoro` | free | yes | needs `kokoro-onnx` + model in `kokoro_models/` |
 | `apple` | free | yes | macOS built-in `say`; `is_available()` false off-macOS |
 | `openai` | paid | no | experimental, key-gated (`OPENAI_API_KEY`), unverified |
+| `orpheus` | free | no (LAN) | self-hosted, **machine-local**: needs a GPU + 2 containers. Gated on `ORPHEUS_BASE_URL`; performs `<laugh>`/`<sigh>`. See [`docs/providers/ORPHEUS.md`](docs/providers/ORPHEUS.md) |
 
-Providers advertise `capabilities()` (rate/pitch support, needs_api_key). The UI
-and CLI adapt to these — e.g. the pitch control disables where unsupported. Add a
-provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
+Providers advertise `capabilities()` (rate/pitch support, needs_api_key,
+`preferred_max_chars`). The UI and CLI adapt to these — e.g. the pitch control
+disables where unsupported. Add a provider by subclassing `TTSProvider` and
+registering it in `_REGISTRY`.
+
+`preferred_max_chars` lets an engine override the global `MAX_CHUNK_CHARS`, which is
+sized for edge-tts. Resolution order is `narrate.resolve_max_chars(provider, explicit)`:
+an explicit `--max-chars` wins, then the provider's preference, then the default.
+Every caller that computes a cache key must resolve *first* and record the resolved
+value — `app.py`'s render digest and `web_api`'s stored job settings both do.
+
+Inline emotion tags (`<laugh>`, `<sigh>`, …) are gated the same way, on
+`supports_emotion_tags`. `clean_for_speech()` strips them by default and
+`build_audiobook_async()` keeps them only when the selected provider performs
+them — so a tagged document renders correctly on **every** provider instead of
+making edge-tts say the word "laugh". Only the eight known tags are touched.
+
+`orpheus` is the one provider `bootstrap.py` cannot install — its model is not in
+`voices.manifest.json` and never should be. It stays out of the Phase 4A Edge-only
+desktop scope. `is_available()` for it must remain a cheap env-var check with **no**
+network call, because `available_providers()` runs it for every provider.
 
 ## Running the interfaces
 

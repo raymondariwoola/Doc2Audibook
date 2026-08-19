@@ -134,6 +134,19 @@ edge-tts is the default provider and all existing signatures were preserved.
       `bootstrap.py` — one command sets up any machine (deps, ffmpeg check, model
       downloads) so switching machines reaches parity. Agent docs: `AGENTS.md`,
       `CLAUDE.md`, `.github/copilot-instructions.md`.
+- [x] **Self-hosted expressive:** `OrpheusProvider` — talks to a local
+      `orpheus-tts` container over the OpenAI-compatible `/v1/audio/speech`. The
+      only provider that **performs** `<laugh>`/`<sigh>` instead of reading them
+      as words. Machine-local by nature (GPU + two containers + a 2 GB model), so
+      it is gated on `ORPHEUS_BASE_URL` and stays out of the Phase 4A desktop
+      scope. Verified end-to-end against a live container.
+      See [`docs/providers/ORPHEUS.md`](docs/providers/ORPHEUS.md).
+- [x] **Capability-driven chunk size:** `Capabilities.preferred_max_chars` +
+      `narrate.resolve_max_chars()`. Token-generating engines get a chunk size
+      that suits them without every caller passing a flag.
+- [x] **Capability-driven emotion tags:** `Capabilities.supports_emotion_tags`.
+      Tags are stripped for engines that cannot perform them, so one tagged
+      document renders correctly on every provider.
 - [ ] **Paid:** `ElevenLabsProvider`, `AzureProvider`; verify `OpenAIProvider` with a real key.
 - [ ] Secure key storage (OS keychain; currently env var / `.env`, never committed).
 - [ ] Per-voice **sample cache** so previews are instant after first play.
@@ -149,6 +162,7 @@ edge-tts is the default provider and all existing signatures were preserved.
 | **Kokoro** ✅ | Free/local | Great quality for its size, offline | Implemented. ~340 MB model |
 | **Piper** ✅ | Free/local | Fast, fully offline, cross-platform | Implemented. Lower ceiling than neural cloud |
 | **Apple say** ✅ | Free/local | Built into macOS, zero downloads | Implemented. macOS only |
+| **Orpheus** | Free/self-hosted | **Performs** `<laugh>`/`<sigh>`; most human-like | Implemented. Needs a GPU + 2 containers; ~0.7 RTF |
 | **OpenAI TTS** | Paid | Cheap, *steerable* tone | `gpt-4o-mini-tts` |
 | **ElevenLabs** | Paid | Best naturalness + cloning | Limited free tier |
 | **Azure HD** | Paid | HD voices, SSML, high bitrate | Same family as edge-tts |
@@ -278,6 +292,29 @@ the tracked source of truth until every item is fixed and verified.
 ## Decisions & changelog
 
 Record notable choices here so future-us remembers the *why*.
+
+- **2026-08-18** — Added `OrpheusProvider`, the first **self-hosted** engine and the
+  only one that performs emotion tags. Three decisions worth remembering:
+  **(1)** it requests **WAV** and encodes locally via `_transcode_wav_to_mp3`, even
+  though the container can return MP3 — `assemble()` concatenates with an ffmpeg
+  stream copy, which needs identical codec parameters across every chunk, and
+  taking the container's MP3 would inherit encoder settings that could drift and
+  silently corrupt a resumed render. Verified live output is MP3/24 kHz/mono/64 kbps,
+  matching Piper and Kokoro. **(2)** `is_available()` is a cheap env-var check with
+  **no** network call, because `available_providers()` runs it for every provider and
+  a reachability probe would stall every UI by the connect timeout on machines
+  without the container. The provider is gated on `ORPHEUS_BASE_URL` being set, so
+  it is invisible everywhere it is not installed — it cannot go in
+  `voices.manifest.json` and must stay out of the Phase 4A Edge-only desktop build.
+  **(3)** Two new capabilities rather than special-casing the provider in the engine:
+  `preferred_max_chars` (Orpheus needs ~400 chars, not the edge-tuned 3000 — a 3B
+  LLM writing audio codes drifts long before that) and `supports_emotion_tags`
+  (tags are stripped for every engine that would read them as the word "laugh",
+  so a tagged manuscript is safe to render with any provider). Verified end-to-end
+  against the live container on The Beast: 4 blocks → 2 chunks → stream-copy
+  assembly, and `(laughs)` → `<laugh>` for Orpheus while edge got the tag removed.
+  Measured ~0.70 RTF with other containers sharing the GPU. **Not** assessed: how
+  the audio actually sounds, which needs a listen.
 
 - **2026-07-24** — Roadmap created. Chose incremental path
   **CLI → Gradio → FastAPI+React → native**, keeping a strict engine/UI split so

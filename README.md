@@ -67,7 +67,8 @@ on each. AI agents working in this repo should read
 ## Features
 
 - **Pluggable voices** — Edge TTS online by default, Piper/Kokoro offline,
-  Apple `say` on macOS, and an experimental key-gated OpenAI provider.
+  Apple `say` on macOS, a self-hosted Orpheus provider that *performs* laughs and
+  sighs, and an experimental key-gated OpenAI provider.
 - **Correct reading order.**
   - `.docx`: walks the document body in true document order, so **tables are read
     in place** relative to surrounding paragraphs. Each table is read row by row
@@ -384,7 +385,7 @@ the engine clears its stale generated artifacts before synthesis.
 | `--rules FILE` | — | JSON of rules — a `{"from":"to"}` object or `[{ "from":..,"to":.. }]`. |
 | `--keep-chunks` | off | Keep the intermediate per-chunk MP3s. |
 | `--work-dir DIR` | `<output>_chunks` | Where chunk MP3s are written (drives resume). |
-| `--max-chars N` | `3000` | Max characters per chunk. |
+| `--max-chars N` | provider-specific | Max characters per chunk. Defaults to the provider's own preference (3000 for most, 400 for `orpheus`). |
 
 ---
 
@@ -400,6 +401,7 @@ engine. Pick one with `--provider`:
 | `piper` | Free | Yes | **Fully offline** neural TTS. Needs `piper-tts` + a model in `piper_voices/`. Rate ✓, pitch ✗. |
 | `kokoro` | Free | Yes | **Fully offline** Kokoro-82M neural TTS (higher quality). Needs `kokoro-onnx` + model in `kokoro_models/`. Rate ✓, pitch ✗. |
 | `apple` | Free | Yes | macOS built-in `say`. Zero downloads. macOS only. Rate ✓, pitch ✗. |
+| `orpheus` | Free | No (LAN) | **Self-hosted, machine-local.** The only engine that *performs* `<laugh>`/`<sigh>`. Needs a GPU + two containers; set `ORPHEUS_BASE_URL`. Rate ✗, pitch ✗. See [`docs/providers/ORPHEUS.md`](docs/providers/ORPHEUS.md). |
 | `openai` | Paid | No | OpenAI TTS. **Experimental** — set `OPENAI_API_KEY`; rate maps to `speed`, pitch unsupported. Not yet verified end-to-end. |
 
 Offline models are managed by the manifest — run `python sync_voices.py` (or
@@ -410,7 +412,28 @@ narrate --provider edge --list-voices en-US        # free online voices
 narrate mydoc.docx --provider piper --voice en_US-lessac-medium   # offline
 export OPENAI_API_KEY=sk-...                        # to try the paid provider
 narrate mydoc.docx --provider openai --voice nova
+
+export ORPHEUS_BASE_URL=http://localhost:8013       # self-hosted, expressive
+narrate mydoc.docx --provider orpheus --voice tara --rules rules.orpheus.example.json
 ```
+
+`orpheus` appears in `--provider` only when `ORPHEUS_BASE_URL` points at a running
+decoder, so the same checkout stays clean on a machine without the GPU.
+
+### Emotion tags
+
+Orpheus performs eight inline tags — `<laugh>` `<chuckle>` `<sigh>` `<gasp>`
+`<groan>` `<yawn>` `<cough>` `<sniffle>` — rather than reading them as words.
+Nothing inserts them for you: either write them into the document, or map prose
+cues such as `(laughs)` with the shipped preset:
+
+```bash
+narrate book.docx --provider orpheus --voice tara --rules rules.orpheus.example.json
+```
+
+**A tagged document is safe to render with any provider.** Engines that cannot
+perform the tags have them stripped out — including the whitespace and stray
+punctuation they would leave behind — so edge-tts never says the word "laugh".
 
 ### Offline providers (Piper & Kokoro)
 

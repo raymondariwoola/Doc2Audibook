@@ -746,14 +746,18 @@ def generate(document, provider_id, voice_label, rate, pitch, fmt, rules_text,
         src, dst = line.split("=", 1)
         rules.append((src, dst))
 
+    # Resolve the chunk size the engine will actually use, so the digest and the
+    # cache directory record it rather than the global default. Providers that
+    # generate audio token-by-token ask for a much smaller chunk.
+    max_chars = narrate.resolve_max_chars(providers.get_provider(provider_id))
+
     digest = _render_digest(
-        input_path, provider_id, short, rate_s, pitch_s,
-        narrate.MAX_CHUNK_CHARS, rules,
+        input_path, provider_id, short, rate_s, pitch_s, max_chars, rules,
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output = _output_path_for(input_path, fmt, digest)
     work_dir = _cache_dir_for(input_path, provider_id, short, rate_s, pitch_s,
-                              narrate.MAX_CHUNK_CHARS, rules)
+                              max_chars, rules)
 
     progress(0.02, desc="Extracting & cleaning text…")
 
@@ -765,7 +769,7 @@ def generate(document, provider_id, voice_label, rate, pitch, fmt, rules_text,
             input_path, output,
             voice=short, rate=rate_s, pitch=pitch_s, fmt=fmt, provider=provider_id,
             user_rules=rules, work_dir=work_dir, keep_chunks=keep_chunks,
-            on_chunk=on_chunk,
+            max_chars=max_chars, on_chunk=on_chunk,
         )
     except ValueError as exc:
         raise gr.Error(str(exc))

@@ -1,0 +1,22 @@
+{
+  "(laughs)": "<laugh>",
+  "(laughing)": "<laugh>",
+  "[laughs]": "<laugh>",
+  "*laughs*": "<laugh>",
+  "(chuckles)": "<chuckle>",
+  "[chuckles]": "<chuckle>",
+  "*chuckles*": "<chuckle>",
+  "(sighs)": "<sigh>",
+  "[sighs]": "<sigh>",
+  "*sighs*": "<sigh>",
+  "(gasps)": "<gasp>",
+  "[gasps]": "<gasp>",
+  "(groans)": "<groan>",
+  "[groans]": "<groan>",
+  "(yawns)": "<yawn>",
+  "[yawns]": "<yawn>",
+  "(coughs)": "<cough>",
+  "[coughs]": "<cough>",
+  "(sniffles)": "<sniffle>",
+  "[sniffles]": "<sniffle>"
+}

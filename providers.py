@@ -19,6 +19,9 @@ Implementations:
   - AppleSayProvider — macOS's built-in offline `say` command.
   - OpenAIProvider   — OpenAI TTS, PAID (needs OPENAI_API_KEY). *Experimental:*
     implemented against the documented API but not yet verified end-to-end here.
+  - OrpheusProvider  — self-hosted Orpheus over an OpenAI-compatible route.
+    FREE but MACHINE-LOCAL (needs a GPU + two containers); gated on
+    ORPHEUS_BASE_URL so it is never offered where it is not installed.
 
 Add a provider by subclassing `TTSProvider` and registering it in `_REGISTRY`.
 """
@@ -68,7 +71,15 @@ class Capabilities:
     supports_voice_list: bool = True
     supports_cloning: bool = False
     supports_word_marks: bool = False   # per-word timings for karaoke highlighting
+    # Whether the engine *performs* inline emotion tags like <laugh>. Engines
+    # that do not will read the word aloud, so the tags are stripped for them.
+    supports_emotion_tags: bool = False
     output_sample_rate_hz: Optional[int] = None
+    # Chunk size this engine actually wants, when the global default is wrong
+    # for it. None means "no opinion — use narrate.MAX_CHUNK_CHARS". Engines
+    # that generate audio token-by-token need far smaller chunks than the
+    # network-bound default, which is sized for edge-tts.
+    preferred_max_chars: Optional[int] = None
     notes: str = ""
 
 
@@ -728,6 +739,174 @@ class KokoroProvider(TTSProvider):
 
 
 # ----------------------------------------------------------------------------
+# OrpheusProvider — free, self-hosted, MACHINE-LOCAL. Talks to an Orpheus TTS
+# decoder over the OpenAI-compatible `/v1/audio/speech` route.
+#
+# Unlike `piper`/`kokoro`, this provider CANNOT be made portable: it needs a GPU,
+# two Docker containers, and a ~2 GB model that is not in this repo and not in
+# `voices.manifest.json`. It is therefore gated on ORPHEUS_BASE_URL being set
+# explicitly — unset means `is_available()` is False and the provider is never
+# offered, which is what keeps it out of the Phase 4A Edge-only desktop build.
+#
+# Its distinguishing feature is that it *performs* emotion tags such as <laugh>
+# and <sigh> rather than reading the words aloud (see Phase 3 / docs).
+# ----------------------------------------------------------------------------
+
+# Base URL of the orpheus-tts decoder, e.g. "http://localhost:8013".
+# Deliberately EMPTY by default: an unset value must mean "not installed here".
+ORPHEUS_BASE_URL_ENV = "ORPHEUS_BASE_URL"
+
+# Chunk size Orpheus wants. The global default (3000) is sized for edge-tts and
+# is far past where an autoregressive audio-token model stays coherent.
+ORPHEUS_MAX_CHUNK_CHARS = 400
+
+# The eight voices the Orpheus 3B fine-tune ships with.
+_ORPHEUS_VOICES: list[tuple[str, str]] = [
+    ("tara", "Female"), ("leah", "Female"), ("jess", "Female"), ("mia", "Female"),
+    ("zoe", "Female"), ("leo", "Male"), ("dan", "Male"), ("zac", "Male"),
+]
+
+# Emotion tags the model performs. Only these, only in angle brackets — square
+# brackets, asterisks and parentheses are read aloud as words instead.
+ORPHEUS_EMOTION_TAGS: tuple[str, ...] = (
+    "laugh", "chuckle", "sigh", "gasp", "groan", "yawn", "cough", "sniffle",
+)
+
+
+def _orpheus_base_url() -> str:
+    """Configured decoder base URL, normalized without a trailing slash."""
+    return os.environ.get(ORPHEUS_BASE_URL_ENV, "").strip().rstrip("/")
+
+
+class OrpheusProvider(TTSProvider):
+    id = "orpheus"
+    label = "Orpheus (self-hosted, expressive)"
+
+    def __init__(self) -> None:
+        # Model name passed through to the decoder; it forwards to llama.cpp.
+        self.model = os.environ.get("ORPHEUS_TTS_MODEL", "orpheus")
+        try:
+            self.timeout = float(os.environ.get("ORPHEUS_TIMEOUT", "300"))
+        except ValueError:
+            self.timeout = 300.0
+
+    def is_available(self) -> bool:
+        # Cheap on purpose: `available_providers()` calls this for every
+        # provider, so it must never make a network request. A configured but
+        # unreachable decoder surfaces as a clear error at synthesize time.
+        url = _orpheus_base_url()
+        return url.startswith("http://") or url.startswith("https://")
+
+    def cache_identity(self) -> str:
+        # The model changes the audio; the URL does not, so it stays out.
+        return f"{self.id}:{self.model}"
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            provider_id=self.id,
+            needs_api_key=False,
+            supports_rate=False,          # an autoregressive LLM has no speed knob
+            supports_pitch=False,
+            supports_voice_list=True,     # a fixed catalog of eight
+            supports_cloning=False,
+            supports_emotion_tags=True,   # the reason this provider exists
+            output_sample_rate_hz=24000,  # SNAC decodes at 24 kHz
+            # A 3B LLM writing audio codes drifts and truncates long before the
+            # 3000-character default; roughly a short paragraph is the safe unit.
+            preferred_max_chars=ORPHEUS_MAX_CHUNK_CHARS,
+            notes=(
+                "Self-hosted and machine-local: needs the orpheus-llm + orpheus-tts "
+                f"containers and ${ORPHEUS_BASE_URL_ENV} set. Performs emotion tags "
+                "(<laugh>, <sigh>, …). Rate and pitch unsupported. Generation is "
+                "GPU-bound and roughly 0.6x real time, so a full-length book takes "
+                "hours — renders are resumable, so this is safe to leave running."
+            ),
+        )
+
+    async def list_voices(self) -> list[VoiceInfo]:
+        if not self.is_available():
+            return []
+        return [
+            VoiceInfo(id=name, label=name.capitalize(), gender=gender,
+                      locale="en-US", provider=self.id,
+                      raw={"ShortName": name, "Locale": "en-US", "Gender": gender})
+            for name, gender in _ORPHEUS_VOICES
+        ]
+
+    def _request_audio(self, text: str, voice_id: str) -> bytes:
+        """POST one utterance to /v1/audio/speech and return the audio bytes."""
+        import urllib.error
+        import urllib.request
+
+        base = _orpheus_base_url()
+        if not base:
+            raise RuntimeError(
+                f"${ORPHEUS_BASE_URL_ENV} is not set — cannot use the Orpheus "
+                "provider. Point it at the orpheus-tts container, e.g. "
+                "http://localhost:8013"
+            )
+
+        # WAV rather than MP3 deliberately: chunks are concatenated with an
+        # ffmpeg stream copy, which requires identical codec parameters across
+        # every chunk. Encoding locally via _transcode_wav_to_mp3 pins those to
+        # the same libmp3lame settings the other local providers produce,
+        # instead of inheriting whatever the container's encoder happens to use.
+        payload = json.dumps({
+            "model": self.model,
+            "input": text,
+            "voice": voice_id,
+            "response_format": "wav",
+        }).encode("utf-8")
+
+        request = urllib.request.Request(
+            f"{base}/v1/audio/speech",
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "audio/*"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace").strip()[:400]
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Orpheus decoder returned HTTP {exc.code} for voice "
+                f"'{voice_id}'.{(' ' + detail) if detail else ''}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Could not reach the Orpheus decoder at {base} ({exc.reason}). "
+                "Is the orpheus-tts container running?"
+            ) from exc
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Orpheus decoder timed out after {self.timeout:.0f}s. Generation "
+                "is GPU-bound — lower --max-chars or raise $ORPHEUS_TIMEOUT."
+            ) from exc
+
+    async def synthesize(
+        self, text: str, voice_id: str, out_path: Path, *, rate: str, pitch: str
+    ) -> None:
+        def _run() -> None:
+            audio = self._request_audio(text, voice_id)
+            if not audio:
+                raise RuntimeError("Orpheus decoder produced an empty audio file")
+            # ffmpeg probes the container rather than trusting the extension, so
+            # this still works if the decoder ignores response_format and
+            # returns MP3 instead of WAV.
+            wav_tmp = out_path.with_suffix(".orpheus.wav")
+            wav_tmp.write_bytes(audio)
+            _transcode_wav_to_mp3(wav_tmp, out_path)
+
+        # The HTTP call is synchronous; keep the event loop responsive.
+        await asyncio.to_thread(_run)
+
+
+# ----------------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------------
 
@@ -737,6 +916,7 @@ _REGISTRY: dict[str, type[TTSProvider]] = {
     KokoroProvider.id: KokoroProvider,
     AppleSayProvider.id: AppleSayProvider,
     OpenAIProvider.id: OpenAIProvider,
+    OrpheusProvider.id: OrpheusProvider,
 }
 _INSTANCES: dict[str, TTSProvider] = {}
 

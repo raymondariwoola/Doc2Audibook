@@ -993,7 +993,7 @@ def create_app(
         rate: int = Form(-4),
         pitch: int = Form(0),
         output_format: str = Form("mp3"),
-        max_chars: int = Form(narrate.MAX_CHUNK_CHARS),
+        max_chars: int | None = Form(None),
         keep_chunks: bool = Form(False),
         rules: str = Form("[]"),
     ) -> dict[str, Any]:
@@ -1008,11 +1008,14 @@ def create_app(
                 status_code=422,
                 detail="Rate and pitch must be between -100 and 100.",
             )
-        if not 250 <= max_chars <= 10_000:
+        if max_chars is not None and not 250 <= max_chars <= 10_000:
             raise HTTPException(
                 status_code=422,
                 detail="max_chars must be between 250 and 10000.",
             )
+        # Omitted means "whatever this engine wants". Resolve it here rather
+        # than in the worker so the stored job settings record the real value.
+        max_chars = narrate.resolve_max_chars(engine, max_chars)
         voice = voice.strip()
         if not voice:
             raise HTTPException(status_code=422, detail="Voice cannot be blank.")
