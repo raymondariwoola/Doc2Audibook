@@ -488,7 +488,7 @@ class EmotionTagTests(unittest.TestCase):
 
         def capture(pid):
             def _synth(chunks, voice, rate, pitch, work_dir, on_chunk=None,
-                       provider=None):
+                       provider=None, concurrency=None):
                 seen[pid] = list(chunks)
                 paths = []
                 for i, _ in enumerate(chunks, start=1):

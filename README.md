@@ -66,6 +66,9 @@ on each. AI agents working in this repo should read
 
 ## Features
 
+- **Concurrent synthesis** — chunks render in parallel up to a per-provider
+  limit, roughly halving wall-clock time on the network and GPU engines while
+  leaving the offline ones serial for thread safety.
 - **Pluggable voices** — Edge TTS online by default, Piper/Kokoro offline,
   Apple `say` on macOS, a self-hosted Orpheus provider that *performs* laughs and
   sighs, and an experimental key-gated OpenAI provider.
@@ -384,6 +387,7 @@ the engine clears its stale generated artifacts before synthesis.
 | `--replace FROM=TO` | — | Find/replace rule for speech. Repeatable. |
 | `--rules FILE` | — | JSON of rules — a `{"from":"to"}` object or `[{ "from":..,"to":.. }]`. |
 | `--keep-chunks` | off | Keep the intermediate per-chunk MP3s. |
+| `--concurrency N` | provider-specific | Chunks to synthesize at once. Defaults to the provider's own limit (1 for the offline engines, 3 for `orpheus`, 4 for `edge`). `1` forces serial. |
 | `--work-dir DIR` | `<output>_chunks` | Where chunk MP3s are written (drives resume). |
 | `--max-chars N` | provider-specific | Max characters per chunk. Defaults to the provider's own preference (3000 for most, 400 for `orpheus`). |
 

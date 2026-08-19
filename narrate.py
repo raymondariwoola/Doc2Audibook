@@ -456,6 +456,21 @@ async def synthesize_to_file(
     await prov.synthesize(text, voice, out_path, rate=rate, pitch=pitch)
 
 
+def resolve_concurrency(
+    provider: "providers.TTSProvider", concurrency: int | None = None
+) -> int:
+    """How many chunks to synthesize at once: an explicit request wins, else the
+    provider's own ceiling. Never less than 1.
+
+    Deliberately **not** part of the cache fingerprint: how many chunks are in
+    flight cannot change the audio any one of them produces, so changing it must
+    not invalidate a half-finished render.
+    """
+    if concurrency is not None:
+        return max(1, concurrency)
+    return max(1, provider.capabilities().max_concurrent_chunks)
+
+
 async def generate_chunks(
     chunks: list[str],
     voice: str,
@@ -464,27 +479,70 @@ async def generate_chunks(
     work_dir: Path,
     on_chunk=None,
     provider: "providers.TTSProvider | None" = None,
+    concurrency: int | None = None,
 ) -> list[Path]:
     """Synthesize each chunk to its own MP3. Resumable: non-empty existing
     chunk files are skipped. `on_chunk(i, total, chars, status)` is called per
-    chunk with status in {"skipped", "done"} so any UI can render progress."""
+    chunk with status in {"skipped", "done"} so any UI can render progress.
+
+    Chunks are synthesized up to `concurrency` at a time (default: whatever the
+    provider advertises). Progress is still reported strictly in chunk order —
+    both shipped UIs use `i / total` as a progress fraction, so out-of-order
+    callbacks would make their progress bars jump backwards.
+    """
     prov = provider or providers.default_provider()
+    limit = resolve_concurrency(prov, concurrency)
     work_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
     total = len(chunks)
+    paths = [work_dir / f"chunk_{i:04d}.mp3" for i in range(1, total + 1)]
 
-    for i, text in enumerate(chunks, start=1):
-        out_path = work_dir / f"chunk_{i:04d}.mp3"
-        paths.append(out_path)
+    def already_done(path: Path) -> bool:
+        return path.exists() and path.stat().st_size > 0
 
-        if out_path.exists() and out_path.stat().st_size > 0:
+    if limit == 1:
+        # Serial path, kept intact: the local ONNX providers are process
+        # singletons and are not documented as thread-safe (R-004).
+        for i, (chunk_text, out_path) in enumerate(zip(chunks, paths), start=1):
+            if already_done(out_path):
+                if on_chunk:
+                    on_chunk(i, total, len(chunk_text), "skipped")
+                continue
+            await prov.synthesize(chunk_text, voice, out_path,
+                                  rate=rate, pitch=pitch)
             if on_chunk:
-                on_chunk(i, total, len(text), "skipped")
-            continue
+                on_chunk(i, total, len(chunk_text), "done")
+        return paths
 
-        await prov.synthesize(text, voice, out_path, rate=rate, pitch=pitch)
-        if on_chunk:
-            on_chunk(i, total, len(text), "done")
+    semaphore = asyncio.Semaphore(limit)
+
+    async def render(chunk_text: str, out_path: Path) -> str:
+        # Checked inside the task, not up front, so a chunk finished by an
+        # earlier interrupted run is still skipped without occupying a slot.
+        if already_done(out_path):
+            return "skipped"
+        async with semaphore:
+            await prov.synthesize(chunk_text, voice, out_path,
+                                  rate=rate, pitch=pitch)
+        return "done"
+
+    tasks = [
+        asyncio.create_task(render(chunk_text, out_path))
+        for chunk_text, out_path in zip(chunks, paths)
+    ]
+    try:
+        # Await in index order. Work still overlaps; only the *reporting* is
+        # serialized, which keeps `i` meaningful and progress monotonic.
+        for i, (chunk_text, task) in enumerate(zip(chunks, tasks), start=1):
+            status = await task
+            if on_chunk:
+                on_chunk(i, total, len(chunk_text), status)
+    except BaseException:
+        # Abandon the rest rather than leaving them running behind a failure.
+        # Chunks already written stay on disk, so a re-run resumes from them.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     return paths
 
@@ -741,6 +799,7 @@ async def build_audiobook_async(
     work_dir: Optional[Path] = None,
     keep_chunks: bool = False,
     max_chars: int | None = None,
+    concurrency: int | None = None,
     on_stage: Optional[Callable[[str, dict], None]] = None,
     on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> AudiobookResult:
@@ -790,7 +849,7 @@ async def build_audiobook_async(
 
     chunk_paths = await generate_chunks(
         chunks, voice, rate, pitch, work_dir,
-        on_chunk=on_chunk, provider=prov,
+        on_chunk=on_chunk, provider=prov, concurrency=concurrency,
     )
 
     if on_stage:
@@ -826,6 +885,7 @@ def build_audiobook(
     work_dir: Optional[Path] = None,
     keep_chunks: bool = False,
     max_chars: int | None = None,
+    concurrency: int | None = None,
     on_stage: Optional[Callable[[str, dict], None]] = None,
     on_chunk: Optional[Callable[[int, int, int, str], None]] = None,
 ) -> AudiobookResult:
@@ -842,6 +902,7 @@ def build_audiobook(
         work_dir=work_dir,
         keep_chunks=keep_chunks,
         max_chars=max_chars,
+        concurrency=concurrency,
         on_stage=on_stage,
         on_chunk=on_chunk,
     ))
@@ -888,6 +949,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="JSON file of find/replace rules ({\"from\":\"to\"} object or [{from,to}] list)")
     p.add_argument("--work-dir", help="folder for intermediate chunk MP3s (default: <output>_chunks)")
     p.add_argument("--keep-chunks", action="store_true", help="keep intermediate chunk files")
+    p.add_argument("--concurrency", type=int, default=None,
+                   help="chunks to synthesize at once (default: the provider's "
+                        "own limit; 1 forces serial)")
     p.add_argument("--max-chars", type=int, default=None,
                    help=f"max characters per chunk (default: the provider's own "
                         f"preference, or {MAX_CHUNK_CHARS})")
@@ -963,6 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
             provider=args.provider,
             user_rules=user_rules, work_dir=work_dir,
             keep_chunks=args.keep_chunks, max_chars=args.max_chars,
+            concurrency=args.concurrency,
             on_stage=on_stage, on_chunk=on_chunk,
         )
     except ValueError as exc:

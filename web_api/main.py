@@ -623,6 +623,11 @@ async def _run_job(app: FastAPI, job_id: str) -> None:
         # Provider instances (notably the local Piper/Kokoro engines) are
         # process singletons and are not guaranteed to be thread-safe. The
         # first web queue therefore serializes generation and previews.
+        #
+        # This lock serializes *jobs*. Chunks within one job may still overlap,
+        # bounded by the provider's own `max_concurrent_chunks` — which is 1 for
+        # exactly the singleton engines this lock exists to protect, so R-004
+        # holds at both levels.
         async with app.state.generation_lock:
             store.update(
                 job_id,

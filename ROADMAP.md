@@ -144,6 +144,10 @@ edge-tts is the default provider and all existing signatures were preserved.
 - [x] **Capability-driven chunk size:** `Capabilities.preferred_max_chars` +
       `narrate.resolve_max_chars()`. Token-generating engines get a chunk size
       that suits them without every caller passing a flag.
+- [x] **Concurrent chunk synthesis:** `Capabilities.max_concurrent_chunks` +
+      `narrate.resolve_concurrency()`. Chunks overlap up to a per-provider limit
+      while progress is still reported in chunk order. Measured ~1.9x on Orpheus;
+      offline engines stay serial for thread safety (R-004).
 - [x] **Capability-driven emotion tags:** `Capabilities.supports_emotion_tags`.
       Tags are stripped for engines that cannot perform them, so one tagged
       document renders correctly on every provider.
@@ -292,6 +296,25 @@ the tracked source of truth until every item is fixed and verified.
 ## Decisions & changelog
 
 Record notable choices here so future-us remembers the *why*.
+
+- **2026-08-19** — `generate_chunks()` now synthesizes concurrently, bounded by a new
+  `Capabilities.max_concurrent_chunks`. The limits are **measured, not assumed**: on
+  Orpheus over six chunks, 1x=29s, 2x=18s, 3x=15s, 4x=16s, so it declares 3 — past
+  that the GPU contends with itself and throughput falls back. End to end through the
+  CLI that is ~1.5-1.9x. Edge and OpenAI declare 4 (network-bound, and deliberately
+  modest on a free Microsoft endpoint); Piper, Kokoro and Apple stay at **1**, which
+  is also the dataclass default, so every provider that does not opt in behaves
+  exactly as before. Piper/Kokoro must stay at 1 — they hold process-singleton ONNX
+  engines that are not documented as thread-safe (R-004); the web queue's job lock
+  does not cover chunks within a single job, so the capability is the real control.
+  Two design points worth keeping: **(1)** work overlaps but `on_chunk` still fires
+  strictly 1..N, because both UIs use `i / total` as a progress fraction and
+  out-of-order callbacks would drive their progress bars backwards; **(2)**
+  concurrency is deliberately *not* in the cache fingerprint, since the number of
+  chunks in flight cannot change the audio any one of them produces. Also noted
+  while measuring: Orpheus is non-deterministic, and two identical *serial* runs of
+  one document produced 33.7s and 36.2s of audio — concurrency did not introduce
+  that, and it means a partially re-rendered chunk cache can carry a seam.
 
 - **2026-08-18** — Added `OrpheusProvider`, the first **self-hosted** engine and the
   only one that performs emotion tags. Three decisions worth remembering:

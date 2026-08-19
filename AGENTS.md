@@ -88,6 +88,18 @@ an explicit `--max-chars` wins, then the provider's preference, then the default
 Every caller that computes a cache key must resolve *first* and record the resolved
 value — `app.py`'s render digest and `web_api`'s stored job settings both do.
 
+`max_concurrent_chunks` says how many chunks `generate_chunks()` may synthesize at
+once (`narrate.resolve_concurrency`). It defaults to **1**, and Piper/Kokoro must
+stay there — they hold process-singleton ONNX engines that are not documented as
+thread-safe (R-004). Two invariants when touching this code:
+
+- **Report in chunk order.** Work overlaps, but `on_chunk` fires strictly 1..N.
+  Both UIs use `i / total` as a progress fraction, so out-of-order callbacks make
+  their progress bars run backwards.
+- **Keep concurrency out of the cache fingerprint.** How many chunks are in flight
+  cannot change the audio any one of them produces, so putting it in the identity
+  would invalidate resumable renders for no reason.
+
 Inline emotion tags (`<laugh>`, `<sigh>`, …) are gated the same way, on
 `supports_emotion_tags`. `clean_for_speech()` strips them by default and
 `build_audiobook_async()` keeps them only when the selected provider performs

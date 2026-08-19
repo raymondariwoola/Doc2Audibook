@@ -183,6 +183,25 @@ Two things make this tolerable:
 If you are also running Ollama on the same GPU, expect contention — the failure
 mode is audio stuttering inside a chunk rather than an error.
 
+## Two behaviours to expect
+
+**Chunks are synthesized three at a time.** Orpheus declares
+`max_concurrent_chunks = 3`, measured rather than guessed — over six chunks on The
+Beast: 1x took 29s, 2x took 18s, 3x took 15s, and 4x regressed to 16s as the GPU
+began contending with itself. End to end through the CLI that is roughly a 1.5-1.9x
+speedup. Override it with `--concurrency N` (`1` forces the old serial behaviour).
+
+**The same text does not produce identical audio twice.** Orpheus samples like any
+other LLM, so re-rendering a chunk gives a slightly different take — two identical
+serial runs of the same document measured 33.7s and 36.2s of audio. Two consequences:
+
+- Deleting one chunk from the resume cache and re-rendering it can leave a subtle
+  seam, because its neighbours came from a different sampling run. If a render is
+  worth keeping, keep the whole `_chunks` directory.
+- Duration will not match exactly between runs. That is the model, not a fault, and
+  not something concurrency changed — the variation is identical with
+  `--concurrency 1`.
+
 ## Troubleshooting
 
 | Symptom | Cause |

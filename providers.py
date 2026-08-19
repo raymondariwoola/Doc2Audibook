@@ -80,6 +80,11 @@ class Capabilities:
     # that generate audio token-by-token need far smaller chunks than the
     # network-bound default, which is sized for edge-tts.
     preferred_max_chars: Optional[int] = None
+    # How many chunks may be synthesized at once. 1 (the default) means strictly
+    # serial, which is the only safe assumption: the local ONNX providers hold
+    # process-singleton engines that are not documented as thread-safe (R-004).
+    # Raise it only for engines proven to tolerate concurrent calls.
+    max_concurrent_chunks: int = 1
     notes: str = ""
 
 
@@ -187,6 +192,10 @@ class EdgeTTSProvider(TTSProvider):
             supports_cloning=False,
             supports_word_marks=True,
             output_sample_rate_hz=24000,
+            # Network-bound: chunks spend their time waiting on a socket, so
+            # overlapping them is nearly free. Kept modest deliberately — this
+            # is a free Microsoft endpoint, not something to saturate.
+            max_concurrent_chunks=4,
             notes="Free, no key. Output is 24 kHz mono ~48 kbps MP3.",
         )
 
@@ -345,6 +354,7 @@ class OpenAIProvider(TTSProvider):
             supports_voice_list=True,     # a fixed catalog
             supports_cloning=False,
             output_sample_rate_hz=24000,
+            max_concurrent_chunks=4,   # network-bound, same reasoning as edge
             notes="Needs OPENAI_API_KEY. Rate maps to `speed`; pitch unsupported. "
                   "Experimental — not yet verified end-to-end here.",
         )
@@ -760,6 +770,10 @@ ORPHEUS_BASE_URL_ENV = "ORPHEUS_BASE_URL"
 # is far past where an autoregressive audio-token model stays coherent.
 ORPHEUS_MAX_CHUNK_CHARS = 400
 
+# Concurrent requests to the decoder. Measured rather than guessed; see the note
+# in OrpheusProvider.capabilities().
+ORPHEUS_MAX_CONCURRENT_CHUNKS = 3
+
 # The eight voices the Orpheus 3B fine-tune ships with.
 _ORPHEUS_VOICES: list[tuple[str, str]] = [
     ("tara", "Female"), ("leah", "Female"), ("jess", "Female"), ("mia", "Female"),
@@ -814,6 +828,10 @@ class OrpheusProvider(TTSProvider):
             # A 3B LLM writing audio codes drifts and truncates long before the
             # 3000-character default; roughly a short paragraph is the safe unit.
             preferred_max_chars=ORPHEUS_MAX_CHUNK_CHARS,
+            # Measured on The Beast over 6 chunks: 1x=29s, 2x=18s, 3x=15s,
+            # 4x=16s. Three is the peak — beyond it the GPU contends with
+            # itself and throughput drops back. Worth ~1.9x overall.
+            max_concurrent_chunks=ORPHEUS_MAX_CONCURRENT_CHUNKS,
             notes=(
                 "Self-hosted and machine-local: needs the orpheus-llm + orpheus-tts "
                 f"containers and ${ORPHEUS_BASE_URL_ENV} set. Performs emotion tags "
